@@ -31,10 +31,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
             libdbus-1-dev \
-            pkg-config
+            pkg-config \
+            qml6-module-qtquick \
+            qt6-declarative-dev-tools
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check QML formatting and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          qml_files=(
+            crates/cli/assets/noctalia/Main.qml
+            crates/cli/assets/noctalia/BarWidget.qml
+            crates/cli/assets/noctalia/Panel.qml
+          )
+          for file in "${qml_files[@]}"; do
+            diff -u "$file" <(qmlformat "$file")
+          done
+          qmllint \
+            --import info \
+            --unqualified info \
+            --required info \
+            --signal-handler-parameters info \
+            --unresolved-type info \
+            "${qml_files[@]}"
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -51,6 +73,9 @@ jobs:
             llm-meter-storage
             llm-meter-secret-store
             llm-meter-provider-openai
+            llm-meter-provider-kimi
+            llm-meter-relay-proxy
+            llm-meter-provider-relay
             llm-meter-provider-testkit
             llm-meter-daemon
             llm-meter-cli
