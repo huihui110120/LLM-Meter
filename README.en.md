@@ -1,0 +1,464 @@
+# LLM Meter
+
+**English** | [简体中文](README.md)
+
+[![llm-meter-cli on crates.io](https://img.shields.io/crates/v/llm-meter-cli.svg?label=llm-meter-cli)](https://crates.io/crates/llm-meter-cli)
+[![llm-meter-daemon on crates.io](https://img.shields.io/crates/v/llm-meter-daemon.svg?label=llm-meter-daemon)](https://crates.io/crates/llm-meter-daemon)
+[![crates.io downloads](https://img.shields.io/crates/d/llm-meter-cli.svg?label=downloads)](https://crates.io/crates/llm-meter-cli)
+[![license](https://img.shields.io/crates/l/llm-meter-cli.svg)](https://crates.io/crates/llm-meter-cli)
+
+LLM Meter is a local-first usage, cost, and quota monitor for LLM services on
+Linux and Windows. It combines a Rust daemon, CLI, native Linux top-bar
+integration, and a Tauri desktop and tray application.
+
+The current provider implementation supports OpenAI Platform accounts,
+ChatGPT subscriptions, and Kimi (Moonshot AI) Code subscriptions. LLM Meter
+can also discover locally running Codex sessions, split their token usage by
+model, and calculate an API-equivalent cost estimate.
+
+## Version 0.2.0
+
+- Adds relay-provider support for New API, OpenRouter, and generic OpenAI-compatible endpoints.
+- Adds a local authenticated relay proxy with per-client credentials and usage accounting.
+- Expands relay management across the CLI, desktop UI, and native Noctalia panel.
+- Fixes the Noctalia bar widget width negotiation so the seven-day Token trend is not clipped.
+
+## Features
+
+- ChatGPT subscription quota, weekly reset time, and reset-credit expiry.
+- Kimi (Moonshot AI) Code subscription quota and usage through OAuth device-code login.
+- Embedded pricing catalog for OpenAI, Kimi, MiniMax, GLM, MiMo, Claude, DeepSeek, and Gemini.
+- Estimated quota exhaustion time based on recent local activity.
+- OpenAI Platform usage and cost collection through supported API credentials.
+- New API and OpenRouter usage collection, plus generic OpenAI-compatible relay support.
+- Authenticated local relay proxy with per-client credentials and usage accounting.
+- Automatic discovery of running Codex sessions every two seconds.
+- Per-model input, cached-input, output, and total-token accounting.
+- Local-day Token and API-equivalent cost totals that survive Codex exits and
+  daemon restarts.
+- Native Noctalia popup with overview, connection, login, budget, reset-credit,
+  and local-Codex pages.
+- Configurable top-bar fields: account, quota, today's Tokens, today's cost,
+  active Codex count, and seven-day trend.
+- Waybar JSON output, CLI diagnostics, SQLite history, alerts, and budgets.
+- Secrets stored in the operating-system credential store rather than SQLite.
+
+> [!IMPORTANT]
+> ChatGPT subscriptions are not billed per Token. Local Codex costs shown by
+> LLM Meter are estimates using equivalent API text-token prices, not an
+> additional charge or an invoice. The embedded catalog now covers OpenAI,
+> Kimi, MiniMax, GLM, MiMo, Claude, DeepSeek, and Gemini; prices can change
+> and each provider records its source and effective date.
+
+## Architecture
+
+```text
+OpenAI / Codex logs
+        │
+        ▼
+   llm-meterd ─── SQLite + OS credential store
+        │ private local IPC
+        ├──────── llm-meter CLI
+        ├──────── Noctalia / Waybar
+        └──────── Tauri desktop
+```
+
+`llm-meterd` owns provider access, normalization, local Codex collection,
+storage, and alerts. Frontends consume allowlisted snapshots over private local
+IPC: a Unix socket on Linux and a per-user named pipe on Windows. Secret input
+may transit this protected channel briefly, but it is never retained in normal
+snapshot DTOs, SQLite, configuration, logs, or persistent WebView state.
+
+## Requirements
+
+- Rust stable with edition 2024 support is required for source builds.
+- Linux requires a user session with `XDG_RUNTIME_DIR` and a Secret Service
+  implementation such as GNOME Keyring or KeePassXC. Noctalia/Quickshell and
+  Waybar remain optional Linux integrations; Hyprland is supported directly.
+- Windows requires Windows 10 22H2 or a maintained Windows 11 release. Secrets
+  use Windows Credential Manager, and the desktop uses Microsoft Edge WebView2.
+  The NSIS installer provisions the WebView2 bootstrapper when required.
+
+Building the desktop on Linux additionally requires the normal Tauri v2 Linux
+dependencies, including WebKitGTK 4.1 and JavaScriptCoreGTK 4.1.
+
+## Installation
+
+### Windows installer
+
+Download the `llm-meter-vX.Y.Z-x86_64-pc-windows-msvc-unsigned-preview-setup.exe`
+asset from the matching GitHub Release and run it as the current user. The
+installer includes the Tauri desktop, CLI, and `llm-meterd.exe` sidecar, and
+registers the daemon's per-user Scheduled Task. A portable ZIP is also
+published for testing and recovery; it still stores application data under
+`%LOCALAPPDATA%` and secrets in Windows Credential Manager.
+
+The current automated Windows artifacts are unsigned previews. Their filenames
+include `unsigned-preview`, and Windows may display an unknown-publisher
+warning. They are not production-signed releases; published SHA-256 checksums
+verify file integrity but do not establish publisher identity.
+
+The desktop is single-instance. A normal launch shows the draggable compact
+widget that maps Noctalia's `BarWidget` to Windows. Click the widget to toggle
+the 420 x 480 status panel, drag it to keep it where it is useful, or right-click
+it to open the main window. Its position is remembered between launches. When
+desktop login startup is configured, `--hide` creates only the tray. The daemon
+uses a per-user Scheduled Task configured through `llm-meter autostart`, and the
+desktop can also recover an offline sibling daemon with a bounded wait. Quitting
+the desktop tray does not implicitly delete data or credentials.
+
+See [the Windows integration baseline](docs/windows-integration-v0.1.md) for
+supported systems, paths, packaging, security, and troubleshooting.
+On Windows, `llm-meter update` opens the official latest Release; install the
+new current-user NSIS package rather than replacing running executables through
+Cargo.
+
+### Linux stable release with Cargo
+
+For normal use, install the latest published stable release from crates.io.
+This avoids tracking incomplete changes from the repository's `main` branch.
+Install the Rust stable toolchain with [rustup](https://rustup.rs/) first if
+`cargo` is not already available:
+
+```bash
+rustup toolchain install stable
+rustup default stable
+```
+
+Then install the application package using its published lockfile:
+
+```bash
+cargo install --locked llm-meter-cli
+llm-meter setup
+```
+
+Package pages:
+
+- [`llm-meter-cli`](https://crates.io/crates/llm-meter-cli) installs both
+  `llm-meter` and `llm-meterd`, including the deployment wizard;
+- [`llm-meter-daemon`](https://crates.io/crates/llm-meter-daemon) is the reusable
+  daemon runtime library pulled in automatically as a dependency. It does not
+  need to be installed separately.
+
+Cargo installs the binaries under `~/.cargo/bin` by default. If the shell cannot
+find `llm-meter`, add that directory to `PATH` and start a new shell:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+To install a specific stable version instead of the newest one:
+
+```bash
+cargo install --locked --version 0.2.0 llm-meter-cli
+```
+
+Upgrade an existing Cargo installation with:
+
+```bash
+llm-meter update
+```
+
+The updater installs the latest stable crates.io release, refreshes the embedded
+desktop integration, and restarts the daemon only when it was already running.
+On older releases that do not yet provide `update`, run
+`cargo install --locked --force llm-meter-cli` once.
+
+Cargo intentionally does not run package post-install hooks, so the explicit
+`setup` step is what safely asks before modifying desktop configuration. The
+wizard presents separate desktop-environment and top-bar choices. The current
+release supports **Hyprland + Noctalia**; more integrations can be added to the
+same selector later.
+
+For unattended deployment, make the choices explicit:
+
+```bash
+llm-meter setup --desktop hyprland --bar noctalia --non-interactive
+```
+
+Use `--dry-run` to inspect the plan without writing files. The setup command
+installs the embedded Noctalia plugin, adds the Hyprland rule, reloads supported
+components when possible, and installs the `llm-meterd` systemd user service.
+Its user-session startup state can be changed from the Noctalia settings panel
+or from the command line:
+
+```bash
+llm-meter autostart status
+llm-meter autostart enable
+llm-meter autostart disable
+```
+
+The optional Tauri desktop binary is also attached to versioned GitHub Releases;
+the Cargo installation is sufficient for the daemon, CLI, and native Noctalia
+experience.
+
+### Development version from source
+
+Cloning `main` installs the newest development state and may include unfinished
+or breaking changes. Use this path for contributing, testing an unreleased fix,
+or working on the desktop application:
+
+```bash
+git clone https://github.com/huihui110120/LLM-Meter.git
+cd llm-meter
+make install
+```
+
+Run `make run` for the normal foreground development workflow.
+
+`make run` builds the workspace and desktop application, installs development
+binaries under `~/.local/bin`, detects the active supported top bar, synchronizes
+its integration, reloads only the LLM Meter Noctalia plugin when necessary, and
+runs the development daemon in the foreground.
+
+Useful development commands:
+
+```bash
+make run              # build, sync desktop/bar integration, run daemon
+make daemon           # build and run only llm-meterd
+make popup            # open the compact popup application
+make gui              # open the full desktop application
+make sync-noctalia    # install/hot-reload the native Noctalia plugin
+make sync-waybar      # install/reload the Waybar integration
+make check
+make test
+```
+
+## Accounts and authentication
+
+The native popup lets you choose a provider before logging in. It supports
+browser-based ChatGPT (OpenAI) and Kimi (Moonshot AI) logins and manages the
+resulting connections. Equivalent CLI commands are available:
+
+```bash
+# OpenAI ChatGPT (browser login, default)
+llm-meter add subscription --provider openai --open --name "OpenAI ChatGPT"
+llm-meter add subscription --provider openai --device
+
+# Kimi (Moonshot AI) device-code login
+llm-meter add subscription --provider kimi --open --name Kimi
+
+# OpenAI API keys
+llm-meter add admin
+llm-meter add standard
+```
+
+- `subscription` supports both OpenAI and Kimi account flows; use `--provider`
+  to select one and `--open` to open the browser for OAuth/device-code steps.
+- `admin` requests an OpenAI Admin API key.
+- `standard` requests a standard OpenAI API key.
+- For automation, pipe one API key line to `llm-meter add admin --secret-stdin`
+  or `llm-meter add standard --secret-stdin`; API keys are never accepted in
+  command-line arguments.
+
+API keys and OAuth secrets go to the system Keyring. The SQLite database stores
+only credential references and non-secret account state. The ChatGPT
+subscription adapter may reuse authentication owned by the locally installed
+Codex application instead of duplicating it.
+
+## CLI
+
+```bash
+llm-meter status
+llm-meter connections
+llm-meter diagnostics
+llm-meter refresh CONNECTION_ID
+llm-meter refresh-all
+llm-meter remove CONNECTION_ID
+llm-meter budget CONNECTION_ID 20 --currency USD
+llm-meter waybar
+llm-meter waybar --watch
+```
+
+`refresh-all` waits for every configured provider connection to finish a real
+network refresh and immediately refreshes the local Codex collector. Automatic
+provider refresh defaults to five minutes for ChatGPT and Kimi subscriptions
+and ten minutes for Platform usage. Local Codex discovery runs every two
+seconds.
+
+## Noctalia and top-bar settings
+
+Click the LLM Meter pill to open the native translucent popup. Settings, login,
+budgets, and top-bar customization are available without opening the full Tauri
+GUI.
+
+Under **Settings → Top bar display**, each of these values can be enabled or
+disabled independently:
+
+- account name;
+- remaining weekly quota;
+- today's local Codex Tokens;
+- today's API-equivalent cost;
+- active Codex session count;
+- seven-day Token trend.
+
+Settings are persisted by Noctalia and update the bar immediately. Source syncs
+use plugin-only hot reload with a QML cache-buster; Noctalia itself is not
+restarted when files are unchanged or when a plugin reload is sufficient.
+
+## Local Codex accounting
+
+Codex session logs are read incrementally from:
+
+```text
+~/.codex/sessions/YYYY/MM/DD/*.jsonl
+```
+
+On Linux, LLM Meter detects open session files through `/proc`; Windows uses its
+platform collector. Both implementations record model changes and attribute
+cumulative-token deltas to the model active at that point. LLM Meter also reads
+the current and adjacent UTC day directories so today's local total does not
+disappear after a Codex process exits. A new local calendar day starts at zero
+according to the machine's timezone.
+
+The original Codex JSONL files remain owned by Codex; LLM Meter does not copy
+them into its database. Closed historical sessions outside the local-day window
+are therefore not presented as an all-time LLM Meter ledger.
+
+## Files and data
+
+Persistent state is organized under `~/.llm-meter`:
+
+```text
+~/.llm-meter/
+├── config.toml
+├── data/
+│   ├── llm-meter.sqlite3
+│   ├── llm-meter.sqlite3-wal
+│   └── llm-meter.sqlite3-shm
+└── logs/
+    └── llm-meterd.log
+```
+
+Set `LLM_METER_HOME` to use a different persistent root. On first launch, the
+daemon migrates the earlier XDG data/config layout when the new destination is
+empty.
+
+Other locations intentionally remain separate on Linux:
+
+- runtime socket: `$XDG_RUNTIME_DIR/llm-meter/daemon.sock`;
+- sensitive credentials: operating-system Keyring/Secret Service;
+- Codex-owned session and authentication state: `~/.codex`;
+- Noctalia plugin installation: `~/.config/noctalia/plugins/llm-meter`.
+
+Windows stores configuration, SQLite data, and logs under
+`%LOCALAPPDATA%\LLM Meter`; credentials remain in Windows Credential Manager.
+The Windows named pipe has no corresponding file in this directory.
+
+On Linux, directories are created with mode `0700`; database, configuration,
+and daemon log files use mode `0600`. Windows relies on the current user's
+profile ACLs instead of Unix permission bits.
+
+## Configuration
+
+The daemon creates `~/.llm-meter/config.toml` with safe defaults:
+
+```toml
+scheduler_tick_seconds = 30
+subscription_sync_seconds = 300
+platform_usage_sync_seconds = 600
+manual_refresh_min_seconds = 30
+stale_after_seconds = 1800
+
+[retention]
+raw_days = 30
+hourly_days = 180
+provider_events_days = 30
+```
+
+See [`config.example.toml`](https://github.com/huihui110120/LLM-Meter/blob/main/config.example.toml).
+Configuration files must not contain credentials.
+
+## systemd and Hyprland (Linux)
+
+Packaging templates are provided under `packaging/`:
+
+- `packaging/systemd/llm-meterd.service`;
+- `packaging/systemd/llm-meter-desktop.service`;
+- `packaging/hyprland/llm-meter.lua` and `.conf`;
+- `packaging/noctalia/llm-meter/`;
+- `packaging/waybar/`.
+
+After installing the daemon unit:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now llm-meterd.service
+journalctl --user -u llm-meterd.service -f
+```
+
+See the [Hyprland integration guide](https://github.com/huihui110120/LLM-Meter/blob/main/packaging/README-hyprland.md)
+for manual packaging details.
+
+## Development
+
+```bash
+cargo fmt --all -- --check
+cargo check --workspace
+cargo test --workspace
+cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml
+```
+
+The Rust workspace contains:
+
+| Package                                                                             | Purpose                                             |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------- |
+| [`llm-meter-core`](https://crates.io/crates/llm-meter-core)                         | Provider-neutral domain types and adapter contracts |
+| [`llm-meter-storage`](https://crates.io/crates/llm-meter-storage)                   | SQLite repository, migrations, and retention        |
+| [`llm-meter-secret-store`](https://crates.io/crates/llm-meter-secret-store)         | Native Keyring-backed secret storage                |
+| [`llm-meter-provider-openai`](https://crates.io/crates/llm-meter-provider-openai)   | OpenAI subscription and Platform adapters           |
+| [`llm-meter-provider-testkit`](https://crates.io/crates/llm-meter-provider-testkit) | Mock provider and adapter test helpers              |
+| [`llm-meter-daemon`](https://crates.io/crates/llm-meter-daemon)                     | Reusable scheduler, collectors, and IPC runtime     |
+| [`llm-meter-cli`](https://crates.io/crates/llm-meter-cli)                           | `llm-meter` and `llm-meterd` executable package     |
+
+The Tauri desktop package is intentionally excluded from crates.io publishing.
+
+## Publishing crates
+
+Publishing must follow dependency order:
+
+1. `llm-meter-core`;
+2. `llm-meter-secret-store`, `llm-meter-storage`,
+   `llm-meter-provider-openai`, `llm-meter-provider-kimi`, and
+   `llm-meter-relay-proxy`;
+3. `llm-meter-provider-relay` and `llm-meter-provider-testkit`;
+4. `llm-meter-daemon`;
+5. `llm-meter-cli`.
+
+Wait for each newly published version to appear in the registry index before
+continuing. Although `llm-meter-provider-testkit` is only a development helper,
+the daemon declares it as a versioned development dependency, so publish it
+before the daemon.
+
+Before a release, run
+`cargo publish --dry-run --registry crates-io -p PACKAGE --allow-dirty` for
+each package. The explicit registry also works when a local Cargo configuration
+replaces the default crates.io index with a mirror. Downstream dry-runs can
+resolve internal crates only after their exact versions exist in the selected
+registry; before the first real release, use `cargo package --no-verify` to
+inspect their archives without uploading.
+
+## GitHub releases
+
+Pushing a semantic-version tag that matches every Cargo package version creates
+a GitHub Release automatically:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release workflow runs the workspace tests, builds the CLI, daemon, and
+Tauri desktop binaries, and publishes a versioned Linux archive, an explicitly
+labelled unsigned-preview Windows NSIS installer and portable ZIP, and combined
+`SHA256SUMS`. It does not publish crates to crates.io; crate publishing remains
+the separate, ordered process described above.
+
+## Documentation
+
+The detailed architecture and desktop integration documents are indexed in
+[`docs/README.md`](https://github.com/huihui110120/LLM-Meter/blob/main/docs/README.md).
+
+## License
+
+LLM Meter is licensed under the MIT License. See [`LICENSE`](LICENSE).

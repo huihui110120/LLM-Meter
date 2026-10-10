@@ -1,186 +1,168 @@
 # LLM Meter
 
-**English** | [简体中文](README.zh-CN.md)
+[English](README.en.md) | **简体中文**
 
 [![llm-meter-cli on crates.io](https://img.shields.io/crates/v/llm-meter-cli.svg?label=llm-meter-cli)](https://crates.io/crates/llm-meter-cli)
 [![llm-meter-daemon on crates.io](https://img.shields.io/crates/v/llm-meter-daemon.svg?label=llm-meter-daemon)](https://crates.io/crates/llm-meter-daemon)
 [![crates.io downloads](https://img.shields.io/crates/d/llm-meter-cli.svg?label=downloads)](https://crates.io/crates/llm-meter-cli)
 [![license](https://img.shields.io/crates/l/llm-meter-cli.svg)](https://crates.io/crates/llm-meter-cli)
 
-LLM Meter is a local-first usage, cost, and quota monitor for LLM services on
-Linux and Windows. It combines a Rust daemon, CLI, native Linux top-bar
-integration, and a Tauri desktop and tray application.
+LLM Meter 是一个本地优先（local-first）的 LLM 用量、成本与配额监控工具，支持
+Linux 和 Windows。它由 Rust 守护进程、CLI、原生 Linux 顶栏集成，以及 Tauri
+桌面端与托盘应用组成。
 
-The current provider implementation supports OpenAI Platform accounts,
-ChatGPT subscriptions, and Kimi (Moonshot AI) Code subscriptions. LLM Meter
-can also discover locally running Codex sessions, split their token usage by
-model, and calculate an API-equivalent cost estimate.
+当前的 provider 实现支持 OpenAI Platform 账号、ChatGPT 订阅，以及
+Kimi（月之暗面）Code 订阅。LLM Meter 还能发现本地正在运行的 Codex 会话，
+按模型拆分其 Token 用量，并计算 API 等价成本估算。
 
-## Version 0.2.0
+## 版本 0.2.0
 
-- Adds relay-provider support for New API, OpenRouter, and generic OpenAI-compatible endpoints.
-- Adds a local authenticated relay proxy with per-client credentials and usage accounting.
-- Expands relay management across the CLI, desktop UI, and native Noctalia panel.
-- Fixes the Noctalia bar widget width negotiation so the seven-day Token trend is not clipped.
+- 新增对 New API、OpenRouter 以及通用 OpenAI 兼容端点的 relay provider 支持。
+- 新增本地带认证的 relay 代理，支持按客户端凭据与用量计费。
+- 在 CLI、桌面端 UI 和原生 Noctalia 面板中扩展 relay 管理能力。
+- 修复 Noctalia 顶栏组件宽度协商问题，七日 Token 趋势不再被截断。
 
-## Features
+## 功能特性
 
-- ChatGPT subscription quota, weekly reset time, and reset-credit expiry.
-- Kimi (Moonshot AI) Code subscription quota and usage through OAuth device-code login.
-- Embedded pricing catalog for OpenAI, Kimi, MiniMax, GLM, MiMo, Claude, DeepSeek, and Gemini.
-- Estimated quota exhaustion time based on recent local activity.
-- OpenAI Platform usage and cost collection through supported API credentials.
-- New API and OpenRouter usage collection, plus generic OpenAI-compatible relay support.
-- Authenticated local relay proxy with per-client credentials and usage accounting.
-- Automatic discovery of running Codex sessions every two seconds.
-- Per-model input, cached-input, output, and total-token accounting.
-- Local-day Token and API-equivalent cost totals that survive Codex exits and
-  daemon restarts.
-- Native Noctalia popup with overview, connection, login, budget, reset-credit,
-  and local-Codex pages.
-- Configurable top-bar fields: account, quota, today's Tokens, today's cost,
-  active Codex count, and seven-day trend.
-- Waybar JSON output, CLI diagnostics, SQLite history, alerts, and budgets.
-- Secrets stored in the operating-system credential store rather than SQLite.
+- ChatGPT 订阅配额、每周重置时间，以及重置额度的过期时间。
+- 通过 OAuth 设备码登录获取 Kimi（月之暗面）Code 订阅配额与用量。
+- 内置 OpenAI、Kimi、MiniMax、GLM、MiMo、Claude、DeepSeek 和 Gemini 的价目表。
+- 基于近期本地活动估算配额耗尽时间。
+- 通过受支持的 API 凭据采集 OpenAI Platform 用量与成本。
+- 采集 New API 和 OpenRouter 用量，并支持通用 OpenAI 兼容 relay。
+- 带认证的本地 relay 代理，支持按客户端凭据与用量计费。
+- 每两秒自动发现正在运行的 Codex 会话。
+- 按模型统计输入、缓存输入、输出和总 Token。
+- 本地自然日的 Token 与 API 等价成本累计，在 Codex 退出和守护进程重启后仍然保留。
+- 原生 Noctalia 弹窗，含总览、连接、登录、预算、重置额度和本地 Codex 页面。
+- 可配置的顶栏字段：账号、配额、今日 Token、今日成本、活跃 Codex 数量和七日趋势。
+- Waybar JSON 输出、CLI 诊断、SQLite 历史、告警和预算。
+- 密钥存放在操作系统凭据库中，而非 SQLite。
 
 > [!IMPORTANT]
-> ChatGPT subscriptions are not billed per Token. Local Codex costs shown by
-> LLM Meter are estimates using equivalent API text-token prices, not an
-> additional charge or an invoice. The embedded catalog now covers OpenAI,
-> Kimi, MiniMax, GLM, MiMo, Claude, DeepSeek, and Gemini; prices can change
-> and each provider records its source and effective date.
+> ChatGPT 订阅并非按 Token 计费。LLM Meter 显示的本地 Codex 成本是使用等价
+> API 文本 Token 价格得出的**估算值**，不是额外收费，也不是账单。内置价目表目前
+> 覆盖 OpenAI、Kimi、MiniMax、GLM、MiMo、Claude、DeepSeek 和 Gemini；价格可能
+> 变动，每个 provider 都会记录其来源和生效日期。
 
-## Architecture
+## 架构
 
 ```text
-OpenAI / Codex logs
+OpenAI / Codex 日志
         │
         ▼
-   llm-meterd ─── SQLite + OS credential store
-        │ private local IPC
+   llm-meterd ─── SQLite + 操作系统凭据库
+        │ 私有本地 IPC
         ├──────── llm-meter CLI
         ├──────── Noctalia / Waybar
-        └──────── Tauri desktop
+        └──────── Tauri 桌面端
 ```
 
-`llm-meterd` owns provider access, normalization, local Codex collection,
-storage, and alerts. Frontends consume allowlisted snapshots over private local
-IPC: a Unix socket on Linux and a per-user named pipe on Windows. Secret input
-may transit this protected channel briefly, but it is never retained in normal
-snapshot DTOs, SQLite, configuration, logs, or persistent WebView state.
+`llm-meterd` 负责 provider 访问、数据规范化、本地 Codex 采集、存储和告警。
+各前端通过私有本地 IPC 消费经白名单过滤的快照：Linux 上是 Unix socket，
+Windows 上是每用户命名管道。密钥输入可能会短暂经过这条受保护的通道，但绝不会
+保留在常规快照 DTO、SQLite、配置、日志或持久化的 WebView 状态中。
 
-## Requirements
+## 环境要求
 
-- Rust stable with edition 2024 support is required for source builds.
-- Linux requires a user session with `XDG_RUNTIME_DIR` and a Secret Service
-  implementation such as GNOME Keyring or KeePassXC. Noctalia/Quickshell and
-  Waybar remain optional Linux integrations; Hyprland is supported directly.
-- Windows requires Windows 10 22H2 or a maintained Windows 11 release. Secrets
-  use Windows Credential Manager, and the desktop uses Microsoft Edge WebView2.
-  The NSIS installer provisions the WebView2 bootstrapper when required.
+- 从源码构建需要支持 edition 2024 的 Rust stable。
+- Linux 需要一个具备 `XDG_RUNTIME_DIR` 的用户会话，以及一个 Secret Service
+  实现，例如 GNOME Keyring 或 KeePassXC。Noctalia/Quickshell 和 Waybar 是可选的
+  Linux 集成；Hyprland 直接受支持。
+- Windows 需要 Windows 10 22H2 或仍受维护的 Windows 11 版本。密钥使用 Windows
+  凭据管理器，桌面端使用 Microsoft Edge WebView2。NSIS 安装包会在需要时自动配置
+  WebView2 引导程序。
 
-Building the desktop on Linux additionally requires the normal Tauri v2 Linux
-dependencies, including WebKitGTK 4.1 and JavaScriptCoreGTK 4.1.
+在 Linux 上构建桌面端还需要常规的 Tauri v2 Linux 依赖，包括 WebKitGTK 4.1 和
+JavaScriptCoreGTK 4.1。
 
-## Installation
+## 安装
 
-### Windows installer
+### Windows 安装包
 
-Download the `llm-meter-vX.Y.Z-x86_64-pc-windows-msvc-unsigned-preview-setup.exe`
-asset from the matching GitHub Release and run it as the current user. The
-installer includes the Tauri desktop, CLI, and `llm-meterd.exe` sidecar, and
-registers the daemon's per-user Scheduled Task. A portable ZIP is also
-published for testing and recovery; it still stores application data under
-`%LOCALAPPDATA%` and secrets in Windows Credential Manager.
+从对应的 GitHub Release 下载
+`llm-meter-vX.Y.Z-x86_64-pc-windows-msvc-unsigned-preview-setup.exe`，以当前用户
+身份运行。安装包包含 Tauri 桌面端、CLI 和 `llm-meterd.exe` sidecar，并注册守护
+进程的每用户计划任务。同时提供便携版 ZIP，用于测试和恢复；它仍将应用数据存放在
+`%LOCALAPPDATA%` 下，密钥存放在 Windows 凭据管理器中。
 
-The current automated Windows artifacts are unsigned previews. Their filenames
-include `unsigned-preview`, and Windows may display an unknown-publisher
-warning. They are not production-signed releases; published SHA-256 checksums
-verify file integrity but do not establish publisher identity.
+当前自动构建的 Windows 产物是未签名预览版。其文件名包含 `unsigned-preview`，
+Windows 可能提示未知发布者。它们不是生产签名版本；发布的 SHA-256 校验和可验证
+文件完整性，但不代表发布者身份。
 
-The desktop is single-instance. A normal launch shows the draggable compact
-widget that maps Noctalia's `BarWidget` to Windows. Click the widget to toggle
-the 420 x 480 status panel, drag it to keep it where it is useful, or right-click
-it to open the main window. Its position is remembered between launches. When
-desktop login startup is configured, `--hide` creates only the tray. The daemon
-uses a per-user Scheduled Task configured through `llm-meter autostart`, and the
-desktop can also recover an offline sibling daemon with a bounded wait. Quitting
-the desktop tray does not implicitly delete data or credentials.
+桌面端为单实例。正常启动会显示可拖拽的紧凑组件，它是 Noctalia `BarWidget` 在
+Windows 上的对应物。点击组件可切换 420 x 480 的状态面板，拖动可把它放到顺手的
+位置，右键可打开主窗口。其位置在多次启动之间会被记住。当配置了桌面登录自启时，
+`--hide` 只会创建托盘。守护进程通过 `llm-meter autostart` 配置的每用户计划任务
+运行，桌面端也能在有限等待时间内恢复离线的同级守护进程。退出桌面托盘不会隐式
+删除数据或凭据。
 
-See [the Windows integration baseline](docs/windows-integration-v0.1.md) for
-supported systems, paths, packaging, security, and troubleshooting.
-On Windows, `llm-meter update` opens the official latest Release; install the
-new current-user NSIS package rather than replacing running executables through
-Cargo.
+受支持的系统、路径、打包、安全与故障排查请参见
+[Windows 集成基线](docs/windows-integration-v0.1.md)。
+在 Windows 上，`llm-meter update` 会打开官方最新 Release；请安装新的当前用户
+NSIS 包，而不要通过 Cargo 替换正在运行的可执行文件。
 
-### Linux stable release with Cargo
+### 使用 Cargo 安装 Linux 稳定版
 
-For normal use, install the latest published stable release from crates.io.
-This avoids tracking incomplete changes from the repository's `main` branch.
-Install the Rust stable toolchain with [rustup](https://rustup.rs/) first if
-`cargo` is not already available:
+日常使用请从 crates.io 安装最新的稳定发布版。这样可以避免跟踪仓库 `main` 分支上
+未完成的变更。如果还没有 `cargo`，请先用 [rustup](https://rustup.rs/) 安装 Rust
+stable 工具链：
 
 ```bash
 rustup toolchain install stable
 rustup default stable
 ```
 
-Then install the application package using its published lockfile:
+然后使用其发布的 lockfile 安装应用包：
 
 ```bash
 cargo install --locked llm-meter-cli
 llm-meter setup
 ```
 
-Package pages:
+包页面：
 
-- [`llm-meter-cli`](https://crates.io/crates/llm-meter-cli) installs both
-  `llm-meter` and `llm-meterd`, including the deployment wizard;
-- [`llm-meter-daemon`](https://crates.io/crates/llm-meter-daemon) is the reusable
-  daemon runtime library pulled in automatically as a dependency. It does not
-  need to be installed separately.
+- [`llm-meter-cli`](https://crates.io/crates/llm-meter-cli) 会同时安装
+  `llm-meter` 和 `llm-meterd`，并包含部署向导；
+- [`llm-meter-daemon`](https://crates.io/crates/llm-meter-daemon) 是可复用的守护
+  进程运行时库，会作为依赖自动引入，无需单独安装。
 
-Cargo installs the binaries under `~/.cargo/bin` by default. If the shell cannot
-find `llm-meter`, add that directory to `PATH` and start a new shell:
+Cargo 默认将可执行文件安装到 `~/.cargo/bin`。如果 shell 找不到 `llm-meter`，
+请把该目录加入 `PATH` 并重开 shell：
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-To install a specific stable version instead of the newest one:
+如需安装指定稳定版本而非最新版：
 
 ```bash
 cargo install --locked --version 0.2.0 llm-meter-cli
 ```
 
-Upgrade an existing Cargo installation with:
+升级已有的 Cargo 安装：
 
 ```bash
 llm-meter update
 ```
 
-The updater installs the latest stable crates.io release, refreshes the embedded
-desktop integration, and restarts the daemon only when it was already running.
-On older releases that do not yet provide `update`, run
-`cargo install --locked --force llm-meter-cli` once.
+更新器会安装 crates.io 上最新的稳定版，刷新内置的桌面集成，并且仅在守护进程原本
+就在运行时才重启它。对于尚未提供 `update` 的旧版本，先手动执行一次
+`cargo install --locked --force llm-meter-cli`。
 
-Cargo intentionally does not run package post-install hooks, so the explicit
-`setup` step is what safely asks before modifying desktop configuration. The
-wizard presents separate desktop-environment and top-bar choices. The current
-release supports **Hyprland + Noctalia**; more integrations can be added to the
-same selector later.
+Cargo 有意不运行包的安装后钩子，因此需要显式执行 `setup` 步骤，它会在修改桌面
+配置前安全地征求确认。向导会分别提供桌面环境和顶栏的选择。当前发布版支持
+**Hyprland + Noctalia**；后续可以把更多集成加入同一个选择器。
 
-For unattended deployment, make the choices explicit:
+无人值守部署时，请显式指定选项：
 
 ```bash
 llm-meter setup --desktop hyprland --bar noctalia --non-interactive
 ```
 
-Use `--dry-run` to inspect the plan without writing files. The setup command
-installs the embedded Noctalia plugin, adds the Hyprland rule, reloads supported
-components when possible, and installs the `llm-meterd` systemd user service.
-Its user-session startup state can be changed from the Noctalia settings panel
-or from the command line:
+使用 `--dry-run` 可在不写入文件的情况下查看计划。`setup` 命令会安装内置的
+Noctalia 插件、添加 Hyprland 规则、尽可能重载受支持的组件，并安装 `llm-meterd`
+systemd 用户服务。其用户会话自启状态可在 Noctalia 设置面板或命令行中修改：
 
 ```bash
 llm-meter autostart status
@@ -188,15 +170,13 @@ llm-meter autostart enable
 llm-meter autostart disable
 ```
 
-The optional Tauri desktop binary is also attached to versioned GitHub Releases;
-the Cargo installation is sufficient for the daemon, CLI, and native Noctalia
-experience.
+可选的 Tauri 桌面端二进制也会附在带版本号的 GitHub Release 中；对于守护进程、
+CLI 和原生 Noctalia 体验来说，Cargo 安装已经足够。
 
-### Development version from source
+### 从源码安装开发版
 
-Cloning `main` installs the newest development state and may include unfinished
-or breaking changes. Use this path for contributing, testing an unreleased fix,
-or working on the desktop application:
+克隆 `main` 会安装最新的开发状态，可能包含未完成或破坏性变更。此路径适用于贡献
+代码、测试未发布的修复，或开发桌面端应用：
 
 ```bash
 git clone https://github.com/huihui110120/LLM-Meter.git
@@ -204,57 +184,54 @@ cd llm-meter
 make install
 ```
 
-Run `make run` for the normal foreground development workflow.
+日常前台开发流程请运行 `make run`。
 
-`make run` builds the workspace and desktop application, installs development
-binaries under `~/.local/bin`, detects the active supported top bar, synchronizes
-its integration, reloads only the LLM Meter Noctalia plugin when necessary, and
-runs the development daemon in the foreground.
+`make run` 会构建工作区和桌面端应用，把开发二进制安装到 `~/.local/bin`，检测当前
+受支持的顶栏，同步其集成，仅在必要时重载 LLM Meter 的 Noctalia 插件，并在前台
+运行开发版守护进程。
 
-Useful development commands:
+常用开发命令：
 
 ```bash
-make run              # build, sync desktop/bar integration, run daemon
-make daemon           # build and run only llm-meterd
-make popup            # open the compact popup application
-make gui              # open the full desktop application
-make sync-noctalia    # install/hot-reload the native Noctalia plugin
-make sync-waybar      # install/reload the Waybar integration
+make run              # 构建、同步桌面/顶栏集成、运行守护进程
+make daemon           # 只构建并运行 llm-meterd
+make popup            # 打开紧凑弹窗应用
+make gui              # 打开完整桌面端应用
+make sync-noctalia    # 安装/热重载原生 Noctalia 插件
+make sync-waybar      # 安装/重载 Waybar 集成
 make check
 make test
 ```
 
-## Accounts and authentication
+## 账号与认证
 
-The native popup lets you choose a provider before logging in. It supports
-browser-based ChatGPT (OpenAI) and Kimi (Moonshot AI) logins and manages the
-resulting connections. Equivalent CLI commands are available:
+原生弹窗允许你在登录前先选择 provider。它支持基于浏览器的 ChatGPT（OpenAI）和
+Kimi（月之暗面）登录，并管理生成的连接。等效的 CLI 命令如下：
 
 ```bash
-# OpenAI ChatGPT (browser login, default)
+# OpenAI ChatGPT（浏览器登录，默认）
 llm-meter add subscription --provider openai --open --name "OpenAI ChatGPT"
 llm-meter add subscription --provider openai --device
 
-# Kimi (Moonshot AI) device-code login
+# Kimi（月之暗面）设备码登录
 llm-meter add subscription --provider kimi --open --name Kimi
 
-# OpenAI API keys
+# OpenAI API key
 llm-meter add admin
 llm-meter add standard
 ```
 
-- `subscription` supports both OpenAI and Kimi account flows; use `--provider`
-  to select one and `--open` to open the browser for OAuth/device-code steps.
-- `admin` requests an OpenAI Admin API key.
-- `standard` requests a standard OpenAI API key.
-- For automation, pipe one API key line to `llm-meter add admin --secret-stdin`
-  or `llm-meter add standard --secret-stdin`; API keys are never accepted in
-  command-line arguments.
+- `subscription` 同时支持 OpenAI 和 Kimi 账号流程；用 `--provider` 选择，用
+  `--open` 打开浏览器完成 OAuth/设备码步骤。
+- `admin` 请求 OpenAI Admin API key。
+- `standard` 请求标准 OpenAI API key。
+- 自动化场景下，把一行 API key 通过管道传给
+  `llm-meter add admin --secret-stdin` 或 `llm-meter add standard --secret-stdin`；
+  API key 绝不接受通过命令行参数传入。
 
-API keys and OAuth secrets go to the system Keyring. The SQLite database stores
-only credential references and non-secret account state. The ChatGPT
-subscription adapter may reuse authentication owned by the locally installed
-Codex application instead of duplicating it.
+API key 和 OAuth 密钥会存入系统 Keyring。SQLite 数据库只保存凭据引用和非密钥的
+账号状态。ChatGPT 订阅适配器可以复用本地已安装的 Codex 应用所持有的认证信息，
+而不必重复登录。
 
 ## CLI
 
@@ -270,54 +247,46 @@ llm-meter waybar
 llm-meter waybar --watch
 ```
 
-`refresh-all` waits for every configured provider connection to finish a real
-network refresh and immediately refreshes the local Codex collector. Automatic
-provider refresh defaults to five minutes for ChatGPT and Kimi subscriptions
-and ten minutes for Platform usage. Local Codex discovery runs every two
-seconds.
+`refresh-all` 会等待所有已配置的 provider 连接完成一次真实网络刷新，并立即刷新
+本地 Codex 采集器。provider 自动刷新默认为：ChatGPT 和 Kimi 订阅五分钟，
+Platform 用量十分钟。本地 Codex 发现每两秒运行一次。
 
-## Noctalia and top-bar settings
+## Noctalia 与顶栏设置
 
-Click the LLM Meter pill to open the native translucent popup. Settings, login,
-budgets, and top-bar customization are available without opening the full Tauri
-GUI.
+点击 LLM Meter 药丸图标即可打开原生半透明弹窗。设置、登录、预算和顶栏自定义都
+无需打开完整的 Tauri GUI。
 
-Under **Settings → Top bar display**, each of these values can be enabled or
-disabled independently:
+在 **设置 → 顶栏显示** 下，以下各项均可独立启用或禁用：
 
-- account name;
-- remaining weekly quota;
-- today's local Codex Tokens;
-- today's API-equivalent cost;
-- active Codex session count;
-- seven-day Token trend.
+- 账号名称；
+- 每周剩余配额；
+- 今日本地 Codex Token；
+- 今日 API 等价成本；
+- 活跃 Codex 会话数；
+- 七日 Token 趋势。
 
-Settings are persisted by Noctalia and update the bar immediately. Source syncs
-use plugin-only hot reload with a QML cache-buster; Noctalia itself is not
-restarted when files are unchanged or when a plugin reload is sufficient.
+设置由 Noctalia 持久化，并立即更新顶栏。源同步使用仅插件级热重载并带 QML 缓存
+清除参数；当文件未变化或插件重载已足够时，不会重启 Noctalia 本身。
 
-## Local Codex accounting
+## 本地 Codex 计量
 
-Codex session logs are read incrementally from:
+Codex 会话日志从以下位置增量读取：
 
 ```text
 ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 ```
 
-On Linux, LLM Meter detects open session files through `/proc`; Windows uses its
-platform collector. Both implementations record model changes and attribute
-cumulative-token deltas to the model active at that point. LLM Meter also reads
-the current and adjacent UTC day directories so today's local total does not
-disappear after a Codex process exits. A new local calendar day starts at zero
-according to the machine's timezone.
+在 Linux 上，LLM Meter 通过 `/proc` 检测已打开的会话文件；Windows 使用其平台
+采集器。两种实现都会记录模型切换，并把累计 Token 的增量归给当时活跃的模型。
+LLM Meter 还会读取当前及相邻的 UTC 日期目录，因此 Codex 进程退出后今日本地累计
+值不会消失。新的本地自然日按机器时区从零开始。
 
-The original Codex JSONL files remain owned by Codex; LLM Meter does not copy
-them into its database. Closed historical sessions outside the local-day window
-are therefore not presented as an all-time LLM Meter ledger.
+原始 Codex JSONL 文件仍归 Codex 所有；LLM Meter 不会把它们复制进自己的数据库。
+因此，本地日窗口之外已关闭的历史会话不会作为 LLM Meter 的全量账本呈现。
 
-## Files and data
+## 文件与数据
 
-Persistent state is organized under `~/.llm-meter`:
+持久化状态组织在 `~/.llm-meter` 下：
 
 ```text
 ~/.llm-meter/
@@ -330,28 +299,25 @@ Persistent state is organized under `~/.llm-meter`:
     └── llm-meterd.log
 ```
 
-Set `LLM_METER_HOME` to use a different persistent root. On first launch, the
-daemon migrates the earlier XDG data/config layout when the new destination is
-empty.
+设置 `LLM_METER_HOME` 可改用其他持久化根目录。首次启动时，若新目标为空，守护
+进程会迁移早期的 XDG 数据/配置布局。
 
-Other locations intentionally remain separate on Linux:
+在 Linux 上，以下位置有意保持独立：
 
-- runtime socket: `$XDG_RUNTIME_DIR/llm-meter/daemon.sock`;
-- sensitive credentials: operating-system Keyring/Secret Service;
-- Codex-owned session and authentication state: `~/.codex`;
-- Noctalia plugin installation: `~/.config/noctalia/plugins/llm-meter`.
+- 运行时 socket：`$XDG_RUNTIME_DIR/llm-meter/daemon.sock`；
+- 敏感凭据：操作系统 Keyring/Secret Service；
+- Codex 拥有的会话与认证状态：`~/.codex`；
+- Noctalia 插件安装位置：`~/.config/noctalia/plugins/llm-meter`。
 
-Windows stores configuration, SQLite data, and logs under
-`%LOCALAPPDATA%\LLM Meter`; credentials remain in Windows Credential Manager.
-The Windows named pipe has no corresponding file in this directory.
+Windows 将配置、SQLite 数据和日志存放在 `%LOCALAPPDATA%\LLM Meter` 下；凭据保留
+在 Windows 凭据管理器中。Windows 命名管道在该目录中没有对应文件。
 
-On Linux, directories are created with mode `0700`; database, configuration,
-and daemon log files use mode `0600`. Windows relies on the current user's
-profile ACLs instead of Unix permission bits.
+在 Linux 上，目录以 `0700` 模式创建；数据库、配置和守护进程日志文件使用 `0600`
+模式。Windows 依赖当前用户的配置文件 ACL，而非 Unix 权限位。
 
-## Configuration
+## 配置
 
-The daemon creates `~/.llm-meter/config.toml` with safe defaults:
+守护进程会以安全默认值创建 `~/.llm-meter/config.toml`：
 
 ```toml
 scheduler_tick_seconds = 30
@@ -366,20 +332,20 @@ hourly_days = 180
 provider_events_days = 30
 ```
 
-See [`config.example.toml`](https://github.com/huihui110120/LLM-Meter/blob/main/config.example.toml).
-Configuration files must not contain credentials.
+参见 [`config.example.toml`](https://github.com/huihui110120/LLM-Meter/blob/main/config.example.toml)。
+配置文件中不得包含凭据。
 
-## systemd and Hyprland (Linux)
+## systemd 与 Hyprland（Linux）
 
-Packaging templates are provided under `packaging/`:
+打包模板位于 `packaging/` 下：
 
-- `packaging/systemd/llm-meterd.service`;
-- `packaging/systemd/llm-meter-desktop.service`;
-- `packaging/hyprland/llm-meter.lua` and `.conf`;
-- `packaging/noctalia/llm-meter/`;
-- `packaging/waybar/`.
+- `packaging/systemd/llm-meterd.service`；
+- `packaging/systemd/llm-meter-desktop.service`；
+- `packaging/hyprland/llm-meter.lua` 和 `.conf`；
+- `packaging/noctalia/llm-meter/`；
+- `packaging/waybar/`。
 
-After installing the daemon unit:
+安装守护进程 unit 后：
 
 ```bash
 systemctl --user daemon-reload
@@ -387,10 +353,10 @@ systemctl --user enable --now llm-meterd.service
 journalctl --user -u llm-meterd.service -f
 ```
 
-See the [Hyprland integration guide](https://github.com/huihui110120/LLM-Meter/blob/main/packaging/README-hyprland.md)
-for manual packaging details.
+手动打包的详细说明请参见
+[Hyprland 集成指南](https://github.com/huihui110120/LLM-Meter/blob/main/packaging/README-hyprland.md)。
 
-## Development
+## 开发
 
 ```bash
 cargo fmt --all -- --check
@@ -399,66 +365,61 @@ cargo test --workspace
 cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-The Rust workspace contains:
+Rust 工作区包含：
 
-| Package                                                                             | Purpose                                             |
-| ----------------------------------------------------------------------------------- | --------------------------------------------------- |
-| [`llm-meter-core`](https://crates.io/crates/llm-meter-core)                         | Provider-neutral domain types and adapter contracts |
-| [`llm-meter-storage`](https://crates.io/crates/llm-meter-storage)                   | SQLite repository, migrations, and retention        |
-| [`llm-meter-secret-store`](https://crates.io/crates/llm-meter-secret-store)         | Native Keyring-backed secret storage                |
-| [`llm-meter-provider-openai`](https://crates.io/crates/llm-meter-provider-openai)   | OpenAI subscription and Platform adapters           |
-| [`llm-meter-provider-testkit`](https://crates.io/crates/llm-meter-provider-testkit) | Mock provider and adapter test helpers              |
-| [`llm-meter-daemon`](https://crates.io/crates/llm-meter-daemon)                     | Reusable scheduler, collectors, and IPC runtime     |
-| [`llm-meter-cli`](https://crates.io/crates/llm-meter-cli)                           | `llm-meter` and `llm-meterd` executable package     |
+| 包                                                                                  | 用途                                          |
+| ----------------------------------------------------------------------------------- | --------------------------------------------- |
+| [`llm-meter-core`](https://crates.io/crates/llm-meter-core)                         | 与 provider 无关的领域类型和适配器契约         |
+| [`llm-meter-storage`](https://crates.io/crates/llm-meter-storage)                   | SQLite 仓储、迁移与保留策略                    |
+| [`llm-meter-secret-store`](https://crates.io/crates/llm-meter-secret-store)         | 基于原生 Keyring 的密钥存储                    |
+| [`llm-meter-provider-openai`](https://crates.io/crates/llm-meter-provider-openai)   | OpenAI 订阅与 Platform 适配器                  |
+| [`llm-meter-provider-testkit`](https://crates.io/crates/llm-meter-provider-testkit) | Mock provider 与适配器测试辅助工具             |
+| [`llm-meter-daemon`](https://crates.io/crates/llm-meter-daemon)                     | 可复用的调度器、采集器与 IPC 运行时            |
+| [`llm-meter-cli`](https://crates.io/crates/llm-meter-cli)                           | `llm-meter` 和 `llm-meterd` 可执行文件包       |
 
-The Tauri desktop package is intentionally excluded from crates.io publishing.
+Tauri 桌面端包有意排除在 crates.io 发布之外。
 
-## Publishing crates
+## 发布 crate
 
-Publishing must follow dependency order:
+发布必须遵循依赖顺序：
 
-1. `llm-meter-core`;
-2. `llm-meter-secret-store`, `llm-meter-storage`,
-   `llm-meter-provider-openai`, `llm-meter-provider-kimi`, and
-   `llm-meter-relay-proxy`;
-3. `llm-meter-provider-relay` and `llm-meter-provider-testkit`;
-4. `llm-meter-daemon`;
-5. `llm-meter-cli`.
+1. `llm-meter-core`；
+2. `llm-meter-secret-store`、`llm-meter-storage`、
+   `llm-meter-provider-openai`、`llm-meter-provider-kimi` 和
+   `llm-meter-relay-proxy`；
+3. `llm-meter-provider-relay` 和 `llm-meter-provider-testkit`；
+4. `llm-meter-daemon`；
+5. `llm-meter-cli`。
 
-Wait for each newly published version to appear in the registry index before
-continuing. Although `llm-meter-provider-testkit` is only a development helper,
-the daemon declares it as a versioned development dependency, so publish it
-before the daemon.
+每发布一个新版本，都要等它出现在 registry 索引中后再继续。虽然
+`llm-meter-provider-testkit` 只是开发辅助工具，但守护进程将其声明为带版本号的
+开发依赖，因此要在守护进程之前发布它。
 
-Before a release, run
-`cargo publish --dry-run --registry crates-io -p PACKAGE --allow-dirty` for
-each package. The explicit registry also works when a local Cargo configuration
-replaces the default crates.io index with a mirror. Downstream dry-runs can
-resolve internal crates only after their exact versions exist in the selected
-registry; before the first real release, use `cargo package --no-verify` to
-inspect their archives without uploading.
+发布前，对每个包运行
+`cargo publish --dry-run --registry crates-io -p PACKAGE --allow-dirty`。当本地
+Cargo 配置用镜像替换了默认 crates.io 索引时，显式指定 registry 同样有效。下游的
+dry-run 只有在所选 registry 中存在其确切版本后才能解析内部 crate；首次正式发布
+前，可用 `cargo package --no-verify` 检查其归档内容而不上传。
 
-## GitHub releases
+## GitHub Release
 
-Pushing a semantic-version tag that matches every Cargo package version creates
-a GitHub Release automatically:
+推送与所有 Cargo 包版本一致的语义化版本 tag，会自动创建 GitHub Release：
 
 ```bash
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The release workflow runs the workspace tests, builds the CLI, daemon, and
-Tauri desktop binaries, and publishes a versioned Linux archive, an explicitly
-labelled unsigned-preview Windows NSIS installer and portable ZIP, and combined
-`SHA256SUMS`. It does not publish crates to crates.io; crate publishing remains
-the separate, ordered process described above.
+发布工作流会运行工作区测试，构建 CLI、守护进程和 Tauri 桌面端二进制，并发布带
+版本号的 Linux 归档、明确标注为未签名预览版的 Windows NSIS 安装包与便携版 ZIP，
+以及合并的 `SHA256SUMS`。它不会向 crates.io 发布 crate；crate 发布仍是上文所述
+的独立、有序流程。
 
-## Documentation
+## 文档
 
-The detailed architecture and desktop integration documents are indexed in
-[`docs/README.md`](https://github.com/huihui110120/LLM-Meter/blob/main/docs/README.md).
+详细的架构与桌面集成文档索引在
+[`docs/README.md`](https://github.com/huihui110120/LLM-Meter/blob/main/docs/README.md)。
 
-## License
+## 许可证
 
-LLM Meter is licensed under the MIT License. See [`LICENSE`](LICENSE).
+LLM Meter 基于 MIT 许可证授权。参见 [`LICENSE`](LICENSE)。
