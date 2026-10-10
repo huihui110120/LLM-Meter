@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "icon": ["icons/generated/icon.ico"],
+    "externalBin": ["binaries/llm-meter", "binaries/llm-meterd"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/generated/icon.ico",
+        "startMenuFolder": "LLM Meter",
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
+  }
+}

@@ -86,6 +86,7 @@ struct QuotaSample {
 #[derive(Debug, Default)]
 struct SessionState {
     id: String,
+    group_id: String,
     cwd: Option<String>,
     model: String,
     previous: Option<TokenTotal>,
@@ -108,7 +109,10 @@ struct CollectorCache {
 
 static CACHE: OnceLock<Mutex<CollectorCache>> = OnceLock::new();
 
-/// Discover running Codex processes and incrementally ingest their session logs.
+#[cfg(any(windows, test))]
+const RECENT_ACTIVITY_WINDOW_SECONDS: i64 = 30;
+
+/// Discover local Codex sessions and incrementally ingest their session logs.
 /// This is safe to call frequently: already consumed bytes are not parsed again.
 pub fn refresh() {
     let _ = snapshot();
@@ -116,11 +120,19 @@ pub fn refresh() {
 
 pub fn snapshot() -> LocalCodexSnapshot {
     let now = Utc::now();
-    let active = active_session_files();
+    let sessions_root = crate::codex_home()
+        .ok()
+        .map(|home| home.join("sessions"))
+        .map(|root| fs::canonicalize(&root).unwrap_or(root));
+    let recent = sessions_root
+        .as_deref()
+        .map(|root| recent_session_files(root, now.date_naive()))
+        .unwrap_or_default();
+    let active = active_session_files(sessions_root.as_deref(), &recent);
     let today = Local::now().date_naive();
     let history_start = today - chrono::Duration::days(6);
     let mut tracked_paths = active.keys().cloned().collect::<BTreeSet<_>>();
-    tracked_paths.extend(recent_session_files());
+    tracked_paths.extend(recent);
     let mut cache = CACHE
         .get_or_init(|| Mutex::new(CollectorCache::default()))
         .lock()
@@ -146,15 +158,51 @@ pub fn snapshot() -> LocalCodexSnapshot {
         }
     }
 
+    // Codex writes forked rollouts as separate files while retaining the same
+    // `session_id`. Each fork contains the inherited transcript, so adding all
+    // files would count that transcript once per branch. Keep the longest
+    // branch for each real session instead.
+    let mut unique_files = BTreeMap::<String, (&PathBuf, &CachedFile)>::new();
+    for (path, cached) in &cache.files {
+        let key = if cached.state.group_id.is_empty() {
+            path.to_string_lossy().into_owned()
+        } else {
+            cached.state.group_id.clone()
+        };
+        let candidate_total = cached
+            .state
+            .models
+            .values()
+            .map(|usage| usage.total_tokens)
+            .sum::<i64>();
+        let replace = match unique_files.get(&key) {
+            Some((existing_path, existing)) => {
+                let existing_total = existing
+                    .state
+                    .models
+                    .values()
+                    .map(|usage| usage.total_tokens)
+                    .sum::<i64>();
+                candidate_total > existing_total
+                    || (candidate_total == existing_total && path < *existing_path)
+            }
+            None => true,
+        };
+        if replace {
+            unique_files.insert(key, (path, cached));
+        }
+    }
+
     let mut sessions = Vec::new();
     let mut models = BTreeMap::<String, LocalModelUsage>::new();
     let mut today_models = BTreeMap::<String, LocalModelUsage>::new();
     let mut daily_models = BTreeMap::<NaiveDate, BTreeMap<String, LocalModelUsage>>::new();
     let mut quota_samples = Vec::new();
-    for (path, pids) in &active {
-        let Some(cached) = cache.files.get(path) else {
+    for (path, cached) in unique_files.values() {
+        if !session_is_active(cached, now) {
             continue;
-        };
+        }
+        let pids = active.get(*path).cloned().unwrap_or_default();
         for usage in cached.state.models.values() {
             add_usage(
                 models
@@ -187,7 +235,7 @@ pub fn snapshot() -> LocalCodexSnapshot {
             } else {
                 cached.state.model.clone()
             },
-            pids: pids.iter().copied().collect(),
+            pids: pids.into_iter().collect(),
             input_tokens: session_total.input_tokens,
             cached_input_tokens: session_total.cached_input_tokens,
             output_tokens: session_total.output_tokens,
@@ -196,7 +244,7 @@ pub fn snapshot() -> LocalCodexSnapshot {
             last_activity_at: cached.state.last_activity_at,
         });
     }
-    for cached in cache.files.values() {
+    for (_, cached) in unique_files.values() {
         for (day, usages) in &cached.state.daily_models {
             if !(history_start..=today).contains(day) {
                 continue;
@@ -273,8 +321,15 @@ pub fn snapshot() -> LocalCodexSnapshot {
     }
 }
 
-fn active_session_files() -> BTreeMap<PathBuf, BTreeSet<u32>> {
+#[cfg(unix)]
+fn active_session_files(
+    sessions_root: Option<&Path>,
+    _recent: &BTreeSet<PathBuf>,
+) -> BTreeMap<PathBuf, BTreeSet<u32>> {
     let mut result = BTreeMap::<PathBuf, BTreeSet<u32>>::new();
+    let Some(sessions_root) = sessions_root else {
+        return result;
+    };
     let Ok(processes) = fs::read_dir("/proc") else {
         return result;
     };
@@ -299,7 +354,7 @@ fn active_session_files() -> BTreeMap<PathBuf, BTreeSet<u32>> {
             let Ok(target) = fs::read_link(fd.path()) else {
                 continue;
             };
-            if is_session_log(&target) {
+            if is_session_log(&target, sessions_root) {
                 result.entry(target).or_default().insert(pid);
             }
         }
@@ -307,19 +362,53 @@ fn active_session_files() -> BTreeMap<PathBuf, BTreeSet<u32>> {
     result
 }
 
+#[cfg(windows)]
+fn active_session_files(
+    _sessions_root: Option<&Path>,
+    recent: &BTreeSet<PathBuf>,
+) -> BTreeMap<PathBuf, BTreeSet<u32>> {
+    recent
+        .iter()
+        .map(|path| (path.clone(), BTreeSet::new()))
+        .collect()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn active_session_files(
+    _sessions_root: Option<&Path>,
+    _recent: &BTreeSet<PathBuf>,
+) -> BTreeMap<PathBuf, BTreeSet<u32>> {
+    BTreeMap::new()
+}
+
+fn session_is_active(cached: &CachedFile, now: DateTime<Utc>) -> bool {
+    #[cfg(windows)]
+    {
+        recently_active(cached.state.last_activity_at, now)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cached, now);
+        true
+    }
+}
+
+#[cfg(any(windows, test))]
+fn recently_active(last_activity: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    last_activity.is_some_and(|last_activity| {
+        let age = now.signed_duration_since(last_activity);
+        age >= chrono::Duration::zero()
+            && age <= chrono::Duration::seconds(RECENT_ACTIVITY_WINDOW_SECONDS)
+    })
+}
+
 /// Include enough UTC session directories to cover the most recent seven local
 /// calendar days, including timezone boundaries. Parsed files are cached, so
 /// steady-state refreshes only consume appended bytes.
-fn recent_session_files() -> BTreeSet<PathBuf> {
-    let Some(root) = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".codex/sessions"))
-    else {
-        return BTreeSet::new();
-    };
+fn recent_session_files(root: &Path, observed_day: NaiveDate) -> BTreeSet<PathBuf> {
     let mut result = BTreeSet::new();
     for offset in 0..=8 {
-        let day = Utc::now().date_naive() - chrono::Duration::days(offset);
+        let day = observed_day - chrono::Duration::days(offset);
         let directory = root
             .join(day.format("%Y").to_string())
             .join(day.format("%m").to_string())
@@ -329,7 +418,7 @@ fn recent_session_files() -> BTreeSet<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if is_session_log(&path) {
+            if is_session_log(&path, root) {
                 result.insert(path);
             }
         }
@@ -337,14 +426,8 @@ fn recent_session_files() -> BTreeSet<PathBuf> {
     result
 }
 
-fn is_session_log(path: &Path) -> bool {
-    path.extension().is_some_and(|value| value == "jsonl")
-        && path
-            .components()
-            .any(|component| component.as_os_str() == "sessions")
-        && path
-            .to_string_lossy()
-            .contains(&format!("{}{}codex", std::path::MAIN_SEPARATOR, "."))
+fn is_session_log(path: &Path, sessions_root: &Path) -> bool {
+    path.extension().is_some_and(|value| value == "jsonl") && path.starts_with(sessions_root)
 }
 
 fn read_appended(path: &Path, cached: &mut CachedFile) {
@@ -385,6 +468,11 @@ fn consume_event(state: &mut SessionState, event: &Value) {
     match event_type {
         Some("session_meta") => {
             state.id = payload["id"].as_str().unwrap_or_default().to_owned();
+            state.group_id = payload["session_id"]
+                .as_str()
+                .or_else(|| payload["parent_thread_id"].as_str())
+                .unwrap_or_default()
+                .to_owned();
             state.cwd = payload["cwd"].as_str().map(str::to_owned);
         }
         Some("turn_context") => {
@@ -450,7 +538,7 @@ fn consume_token_count(state: &mut SessionState, event: &Value) {
                 .or_insert_with(|| LocalModelUsage {
                     model: model.to_owned(),
                     ..Default::default()
-                });
+            });
             apply_delta(usage, delta);
         }
         state.previous = Some(current);
@@ -488,7 +576,13 @@ fn apply_delta(target: &mut LocalModelUsage, delta: TokenTotal) {
     target.input_tokens += delta.input;
     target.cached_input_tokens += delta.cached;
     target.output_tokens += delta.output;
-    target.total_tokens += delta.total;
+    // `total_token_usage` includes cached input. That is useful diagnostic
+    // data, but it is not newly consumed context and makes a live meter grow
+    // by orders of magnitude for long conversations.
+    target.total_tokens += delta
+        .input
+        .saturating_sub(delta.cached)
+        .saturating_add(delta.output);
 }
 
 fn cost_for_models<'a>(models: impl Iterator<Item = &'a LocalModelUsage>) -> Option<Decimal> {
@@ -553,7 +647,43 @@ mod tests {
         ] {
             consume_event(&mut state, &serde_json::from_str(line).unwrap());
         }
-        assert_eq!(state.models["gpt-5"].total_tokens, 120);
-        assert_eq!(state.models["gpt-5-mini"].total_tokens, 60);
+        assert_eq!(state.models["gpt-5"].total_tokens, 70);
+        assert_eq!(state.models["gpt-5-mini"].total_tokens, 40);
+    }
+
+    #[test]
+    fn custom_codex_home_session_paths_are_accepted() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("custom-codex-home")
+            .join("sessions");
+        let session = root.join("2026/07/14/rollout.jsonl");
+        assert!(is_session_log(&session, &root));
+        assert!(!is_session_log(&root.join("rollout.txt"), &root));
+        assert!(!is_session_log(
+            &root.parent().unwrap().join("other/rollout.jsonl"),
+            &root
+        ));
+    }
+
+    #[test]
+    fn recent_activity_window_has_a_strict_boundary() {
+        let now = DateTime::from_timestamp(100, 0).unwrap();
+        assert!(recently_active(
+            Some(now - chrono::Duration::seconds(RECENT_ACTIVITY_WINDOW_SECONDS)),
+            now
+        ));
+        assert!(!recently_active(
+            Some(
+                now - chrono::Duration::seconds(RECENT_ACTIVITY_WINDOW_SECONDS)
+                    - chrono::Duration::seconds(1)
+            ),
+            now
+        ));
+        assert!(!recently_active(
+            Some(now + chrono::Duration::seconds(1)),
+            now
+        ));
+        assert!(!recently_active(None, now));
     }
 }

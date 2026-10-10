@@ -1,8 +1,13 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    ffi::{OsStr, OsString},
+    io,
     process::Stdio,
     time::Duration,
 };
+
+#[cfg(windows)]
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -18,7 +23,7 @@ use tokio::{
 use uuid::Uuid;
 
 pub struct SubscriptionAdapter {
-    command: String,
+    command: OsString,
     login: Mutex<HashMap<String, AppServer>>,
 }
 impl Default for SubscriptionAdapter {
@@ -30,7 +35,7 @@ impl Default for SubscriptionAdapter {
     }
 }
 impl SubscriptionAdapter {
-    pub fn with_command(command: impl Into<String>) -> Self {
+    pub fn with_command(command: impl Into<OsString>) -> Self {
         Self {
             command: command.into(),
             login: Mutex::new(HashMap::new()),
@@ -310,15 +315,15 @@ struct AppServer {
     id: u64,
 }
 impl AppServer {
-    async fn spawn(command: &str) -> Result<Self, ProviderError> {
-        let mut child = Command::new(command)
-            .arg("app-server")
+    async fn spawn(command: &OsStr) -> Result<Self, ProviderError> {
+        let mut process = app_server_command(command)?;
+        let mut child = process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|_| ProviderError::UnsupportedVersion)?;
+            .map_err(spawn_error)?;
         let input = child
             .stdin
             .take()
@@ -396,6 +401,101 @@ impl AppServer {
             }
         }
     }
+}
+
+fn app_server_command(command: &OsStr) -> Result<Command, ProviderError> {
+    #[cfg(windows)]
+    let mut process = Command::new(resolve_windows_command(command).map_err(spawn_error)?);
+    #[cfg(not(windows))]
+    let mut process = Command::new(command);
+
+    process.arg("app-server");
+    #[cfg(windows)]
+    process.creation_flags(CREATE_NO_WINDOW);
+    Ok(process)
+}
+
+fn spawn_error(error: io::Error) -> ProviderError {
+    match error.kind() {
+        io::ErrorKind::NotFound => ProviderError::UnsupportedVersion,
+        io::ErrorKind::PermissionDenied => ProviderError::PermissionDenied,
+        kind => ProviderError::Internal(format!("failed to start Codex app-server ({kind:?})")),
+    }
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn resolve_windows_command(command: &OsStr) -> io::Result<PathBuf> {
+    let search_paths = std::env::var_os("PATH")
+        .map(|value| {
+            std::env::split_paths(&value)
+                .filter(|path| path.is_absolute())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let app_data = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    resolve_windows_command_from(command, &search_paths, app_data.as_deref())
+}
+
+#[cfg(windows)]
+fn resolve_windows_command_from(
+    command: &OsStr,
+    search_paths: &[PathBuf],
+    app_data: Option<&Path>,
+) -> io::Result<PathBuf> {
+    let requested = PathBuf::from(command);
+    if requested.components().count() > 1 {
+        return existing_command(requested);
+    }
+
+    let names = if requested.extension().is_some() {
+        vec![requested.into_os_string()]
+    } else {
+        [".exe", ".com", ".cmd", ".bat"]
+            .into_iter()
+            .map(|extension| {
+                let mut name = command.to_os_string();
+                name.push(extension);
+                name
+            })
+            .collect()
+    };
+    for directory in search_paths {
+        for name in &names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return existing_command(candidate);
+            }
+        }
+    }
+
+    if command == OsStr::new("codex") {
+        if let Some(app_data) = app_data {
+            let candidate = app_data.join("npm").join("codex.cmd");
+            if candidate.is_file() {
+                return existing_command(candidate);
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "Codex command was not found on PATH or in the npm user directory",
+    ))
+}
+
+#[cfg(windows)]
+fn existing_command(path: PathBuf) -> io::Result<PathBuf> {
+    if !path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Codex command does not exist",
+        ));
+    }
+    Ok(path.canonicalize().unwrap_or(path))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -590,5 +690,46 @@ mod tests {
             quota_display_name("codex", None, "primary", Some(10080)),
             "GPT 周额度"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_and_executes_npm_command_in_a_complex_path() {
+        use std::os::windows::process::CommandExt;
+
+        let root = std::env::temp_dir().join(format!("llm-meter-codex-path-{}", Uuid::new_v4()));
+        let bin = root.join("space & unicode-\u{6d4b}\u{8bd5}");
+        std::fs::create_dir_all(&bin).unwrap();
+        let batch = bin.join("codex.cmd");
+        std::fs::write(&batch, "@echo %1\r\n").unwrap();
+
+        let resolved =
+            resolve_windows_command_from(OsStr::new("codex"), std::slice::from_ref(&bin), None)
+                .unwrap();
+        assert_eq!(resolved.file_name(), Some(OsStr::new("codex.cmd")));
+        let output = std::process::Command::new(&resolved)
+            .arg("app-server")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "app-server");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_executable_has_priority_over_batch_wrapper() {
+        let root =
+            std::env::temp_dir().join(format!("llm-meter-codex-priority-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("codex.exe"), b"fixture").unwrap();
+        std::fs::write(root.join("codex.cmd"), b"@exit /b 0\r\n").unwrap();
+
+        let resolved =
+            resolve_windows_command_from(OsStr::new("codex"), std::slice::from_ref(&root), None)
+                .unwrap();
+        assert_eq!(resolved.file_name(), Some(OsStr::new("codex.exe")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

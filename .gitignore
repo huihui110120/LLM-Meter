@@ -5,3 +5,8 @@ dist/
 .env.*
 !.env.example
 .DS_Store
+
+# Tauri sidecar binaries. These are build artifacts staged by the release
+# workflow and by docs/windows-integration-v0.1.md; they must never be
+# committed (each is well over GitHub's 100 MB per-file push limit).
+apps/desktop/src-tauri/binaries/

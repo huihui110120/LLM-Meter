@@ -41,8 +41,20 @@ pub struct Options {
 
 #[derive(Debug, serde::Serialize)]
 pub struct AutostartStatus {
+    pub backend: &'static str,
+    pub registration: &'static str,
+    pub installed: bool,
     pub enabled: bool,
     pub active: bool,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable_matches_installation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<i32>,
+    pub run_level: &'static str,
+    pub logon_type: &'static str,
 }
 
 pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -80,17 +92,38 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn autostart_status() -> AutostartStatus {
-    AutostartStatus {
-        enabled: command_success(
-            "systemctl",
-            &["--user", "is-enabled", "--quiet", "llm-meterd.service"],
-        ),
-        active: command_success(
-            "systemctl",
-            &["--user", "is-active", "--quiet", "llm-meterd.service"],
-        ),
-    }
+pub fn autostart_status() -> Result<AutostartStatus, Box<dyn std::error::Error>> {
+    let enabled = command_success(
+        "systemctl",
+        &["--user", "is-enabled", "--quiet", "llm-meterd.service"],
+    );
+    let active = command_success(
+        "systemctl",
+        &["--user", "is-active", "--quiet", "llm-meterd.service"],
+    );
+    let service_path = daemon_service_path()?;
+    let executable = sibling_daemon().or_else(|| find_command("llm-meterd"));
+    Ok(AutostartStatus {
+        backend: "systemd-user",
+        registration: "llm-meterd.service",
+        installed: service_path.is_file(),
+        enabled,
+        active,
+        state: if active {
+            "running"
+        } else if enabled {
+            "ready"
+        } else if service_path.is_file() {
+            "disabled"
+        } else {
+            "missing"
+        },
+        executable_matches_installation: executable.as_ref().map(|path| path.is_file()),
+        executable: executable.map(|path| path.to_string_lossy().into_owned()),
+        last_result: None,
+        run_level: "user",
+        logon_type: "user-session",
+    })
 }
 
 pub fn set_autostart(enabled: bool) -> Result<AutostartStatus, Box<dyn std::error::Error>> {
@@ -107,7 +140,7 @@ pub fn set_autostart(enabled: bool) -> Result<AutostartStatus, Box<dyn std::erro
             "could not enable the llm-meterd user service",
         )?;
     } else {
-        let current = autostart_status();
+        let current = autostart_status()?;
         if current.enabled || current.active {
             require_command(
                 "systemctl",
@@ -116,14 +149,14 @@ pub fn set_autostart(enabled: bool) -> Result<AutostartStatus, Box<dyn std::erro
             )?;
         }
     }
-    Ok(autostart_status())
+    autostart_status()
 }
 
 /// Run from the newly installed CLI after `cargo install` replaces the current
 /// executable. Existing integration choices are refreshed without changing the
 /// user's autostart preference.
 pub fn post_update() -> Result<(), Box<dyn std::error::Error>> {
-    let before = autostart_status();
+    let before = autostart_status()?;
     let hyprland = hyprland_config_home()?;
     if hyprland.join("hyprland.lua").is_file() || hyprland.join("hyprland.conf").is_file() {
         install_hyprland()?;
@@ -376,26 +409,33 @@ fn install_hyprland() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn write_daemon_service() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let sibling_daemon = env::current_exe().ok().and_then(|executable| {
-        let daemon = executable.parent()?.join("llm-meterd");
-        daemon.is_file().then_some(daemon)
-    });
-    let Some(daemon) = sibling_daemon.or_else(|| find_command("llm-meterd")) else {
+    let Some(daemon) = sibling_daemon().or_else(|| find_command("llm-meterd")) else {
         return Err(
             "llm-meterd is not on PATH; reinstall with `cargo install --locked llm-meter-cli`"
                 .into(),
         );
     };
-    let config_home = env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().expect("home already resolved").join(".config"));
-    let service_path = config_home.join("systemd/user/llm-meterd.service");
+    let service_path = daemon_service_path()?;
     let service = format!(
         "[Unit]\nDescription=LLM Meter daemon\n\n[Service]\nType=simple\nExecStart={}\nRestart=on-failure\nRestartSec=3\nRuntimeDirectory=llm-meter\nRuntimeDirectoryMode=0700\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
         systemd_quote(&daemon)
     );
     write_if_changed(&service_path, service.as_bytes(), 0o644)?;
     Ok(service_path)
+}
+
+fn sibling_daemon() -> Option<PathBuf> {
+    env::current_exe().ok().and_then(|executable| {
+        let daemon = executable.parent()?.join("llm-meterd");
+        daemon.is_file().then_some(daemon)
+    })
+}
+
+fn daemon_service_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or(home_dir()?.join(".config"));
+    Ok(config_home.join("systemd/user/llm-meterd.service"))
 }
 
 fn read_json_object(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {

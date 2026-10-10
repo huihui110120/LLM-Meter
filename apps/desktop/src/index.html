@@ -1,25 +1,78 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LLM Meter</title><link rel="stylesheet" href="styles.css"></head>
-<body>
-<div class="app" id="shell">
-  <aside class="sidebar">
-    <div class="brand"><span class="brand-mark">◩</span><div><strong>LLM Meter</strong><small>Local observability</small></div></div>
-    <nav id="nav">
-      <button data-page="overview" class="active"><span>⌂</span>仪表盘</button>
-      <button data-page="usage"><span>◫</span>使用量</button>
-      <button data-page="costs" id="cost-nav"><span>◇</span>费用</button>
-      <button data-page="accounts"><span>◎</span>账户与 Provider</button>
-      <button data-page="settings"><span>⚙</span>设置</button>
-    </nav>
-    <div class="sidebar-foot"><i id="daemon-dot"></i><div><strong id="sync-state">正在连接</strong><small id="last-sync">本地 daemon</small></div></div>
-  </aside>
-  <section class="workspace">
-    <header class="topbar"><div><p class="eyebrow" id="page-eyebrow">OVERVIEW</p><h1 id="page-title">仪表盘</h1></div><div class="top-actions"><button id="local-refresh">刷新</button><button class="primary" data-page="accounts">添加连接</button><button id="close" class="icon" aria-label="关闭">×</button></div></header>
-    <main id="content"><section class="surface loading"><span class="spinner"></span><p>正在读取本地数据</p></section></main>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Meter</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-role="main">
+  <!-- Offline Lucide icon subset (ISC). -->
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-chart-line" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="icon-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="icon-restore" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+    <symbol id="icon-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-15.17-6.52L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 15.17 6.52L21 16"/><path d="M16 16h5v5"/></symbol>
+    <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="icon-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+    <symbol id="icon-server" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></symbol>
+    <symbol id="icon-message-circle" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></symbol>
+    <symbol id="icon-coins" viewBox="0 0 24 24"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></symbol>
+    <symbol id="icon-dollar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 18V6"/></symbol>
+    <symbol id="icon-calendar-clock" viewBox="0 0 24 24"><path d="M16 2v4"/><path d="M3 10h11"/><path d="M8 2v4"/><path d="M3 6h18v7"/><path d="M3 6v14h9"/><circle cx="17" cy="17" r="4"/><path d="M17 15.5V17l1 1"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></symbol>
+    <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15 7 3 3"/><path d="m18 4 3 3"/></symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24"><path d="m6 3 14 9-14 9Z"/></symbol>
+    <symbol id="icon-stop" viewBox="0 0 24 24"><rect width="14" height="14" x="5" y="5" rx="1"/></symbol>
+    <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="icon-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+    <symbol id="icon-login" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="icon-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></symbol>
+    <symbol id="icon-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  </svg>
+
+  <section class="widget-shell" id="widget-shell" role="group"
+    aria-label="LLM Meter" title="LLM Meter">
+    <span class="widget-mark" aria-hidden="true">
+      <svg class="glyph"><use href="#icon-chart-line"/></svg>
+    </span>
+    <span class="widget-label" id="widget-label">LLM Meter</span>
+    <button type="button" class="widget-toggle" id="widget-toggle"
+      title="展开完整信息" aria-label="展开完整信息">
+      <svg class="glyph"><use href="#icon-chevron"/></svg>
+    </button>
   </section>
-</div>
-<div id="modal-root"></div>
-<script src="app.js"></script>
+
+  <div class="app-window" id="shell">
+    <section class="status-center">
+      <header class="window-header">
+        <div class="header-leading">
+          <span class="header-mark" id="header-mark"></span>
+          <div class="header-copy">
+            <h1 id="header-title">LLM Meter</h1>
+            <p id="header-subtitle">正在读取本地状态</p>
+          </div>
+        </div>
+        <nav class="header-actions" id="header-actions" aria-label="页面与窗口操作"></nav>
+      </header>
+
+      <main class="content-scroll" id="content" tabindex="-1">
+        <section class="loading-state"><span class="spinner"></span><span>正在读取本地数据</span></section>
+      </main>
+    </section>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+  <script src="app.js"></script>
 </body>
 </html>

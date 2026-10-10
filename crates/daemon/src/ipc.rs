@@ -1,13 +1,14 @@
-use std::{io, os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+use std::{io, sync::Arc};
 
 use llm_meter_core::{CORE_VERSION, IPC_VERSION, SCHEMA_VERSION};
+use llm_meter_ipc::{Listener, MAX_FRAME_BYTES, encode_frame, read_frame};
 use llm_meter_storage::Repository;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
-};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::Notify;
+
+pub use llm_meter_ipc::{Client, call};
 
 use crate::scheduler::ProviderRuntime;
 use crate::snapshot;
@@ -39,70 +40,81 @@ struct RpcError {
 pub struct Server {
     repo: Arc<Repository>,
     runtime: Option<Arc<ProviderRuntime>>,
+    shutdown: Arc<Notify>,
 }
 impl Server {
     pub fn new(repo: Arc<Repository>) -> Self {
         Self {
             repo,
             runtime: None,
+            shutdown: Arc::new(Notify::new()),
         }
     }
     pub fn with_runtime(repo: Arc<Repository>, runtime: Arc<ProviderRuntime>) -> Self {
         Self {
             repo,
             runtime: Some(runtime),
+            shutdown: Arc::new(Notify::new()),
         }
     }
-    pub async fn serve(self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-            tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).await?;
-        }
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        let listener = UnixListener::bind(path)?;
-        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+    pub async fn serve(self, mut listener: Listener) -> io::Result<()> {
         loop {
-            let (stream, _) = listener.accept().await?;
-            let repo = self.repo.clone();
-            let runtime = self.runtime.clone();
-            tokio::spawn(async move {
-                if let Err(e) = handle(stream, repo, runtime).await {
-                    tracing::warn!(component="ipc",error_code="client_io",error=%e,"IPC client disconnected")
+            tokio::select! {
+                _ = self.shutdown.notified() => return Ok(()),
+                accepted = listener.accept() => {
+                    let stream = accepted?;
+                    let repo = self.repo.clone();
+                    let runtime = self.runtime.clone();
+                    let shutdown = self.shutdown.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle(stream, repo, runtime, shutdown).await {
+                            tracing::warn!(component="ipc",error_code="client_io",error=%e,"IPC client disconnected")
+                        }
+                    });
                 }
-            });
+            }
         }
     }
 }
 
 async fn handle(
-    stream: UnixStream,
+    stream: impl AsyncRead + AsyncWrite + Unpin,
     repo: Arc<Repository>,
     runtime: Option<Arc<ProviderRuntime>>,
+    shutdown: Arc<Notify>,
 ) -> io::Result<()> {
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    while let Some(line) = lines.next_line().await? {
+    let (read, mut write) = tokio::io::split(stream);
+    let mut reader = BufReader::new(read);
+    while let Some(line) = read_frame(&mut reader, MAX_FRAME_BYTES).await? {
         let started = std::time::Instant::now();
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(r) => dispatch(&repo, runtime.clone(), r).await,
-            Err(_) => Response {
-                jsonrpc: "2.0",
-                id: Value::Null,
-                result: None,
-                error: Some(RpcError {
-                    code: -32700,
-                    message: "parse error".into(),
-                }),
-            },
+        let (response, shutdown_requested) = match serde_json::from_slice::<Request>(&line) {
+            Ok(r) => {
+                let shutdown_requested = r.jsonrpc == "2.0" && r.method == "system/shutdown";
+                (
+                    dispatch(&repo, runtime.clone(), r).await,
+                    shutdown_requested,
+                )
+            }
+            Err(_) => (
+                Response {
+                    jsonrpc: "2.0",
+                    id: Value::Null,
+                    result: None,
+                    error: Some(RpcError {
+                        code: -32700,
+                        message: "parse error".into(),
+                    }),
+                },
+                false,
+            ),
         };
         crate::telemetry::record_ipc(started.elapsed().as_millis() as u64);
-        let mut bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
-        bytes.push(b'\n');
+        let bytes = encode_frame(&response, MAX_FRAME_BYTES)?;
         write.write_all(&bytes).await?;
+        if shutdown_requested {
+            shutdown.notify_one();
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -123,6 +135,7 @@ async fn dispatch(
         "system/health" => Ok(
             json!({"status":"ok","database":repo.schema_version().is_ok(),"operational_metrics":crate::telemetry::snapshot()}),
         ),
+        "system/shutdown" => Ok(json!({"shutting_down":true})),
         "providers/list" => Ok(json!(
             runtime
                 .as_ref()
@@ -473,72 +486,26 @@ fn public_connection(c: llm_meter_core::Connection) -> Value {
     json!({"id":c.id,"provider_id":c.provider_id,"connection_type":c.connection_type,"display_name":c.display_name,"account_external_id":c.account_external_id,"status":c.status,"created_at":c.created_at,"updated_at":c.updated_at,"last_success_at":c.last_success_at,"last_error_code":c.last_error_code,"disabled_at":c.disabled_at})
 }
 
-pub async fn call(path: &Path, method: &str, params: Value) -> io::Result<Value> {
-    Client::connect(path).await?.call(method, params).await
-}
-
-pub struct Client {
-    read: BufReader<tokio::net::unix::OwnedReadHalf>,
-    write: tokio::net::unix::OwnedWriteHalf,
-    next_id: u64,
-}
-
-impl Client {
-    pub async fn connect(path: &Path) -> io::Result<Self> {
-        let stream = UnixStream::connect(path).await?;
-        let (read, write) = stream.into_split();
-        let mut client = Self {
-            read: BufReader::new(read),
-            write,
-            next_id: 0,
-        };
-        let version = client.call("system/version", json!({})).await?;
-        if version.get("ipc_version").and_then(Value::as_u64) != Some(IPC_VERSION as u64) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incompatible daemon IPC version",
-            ));
-        }
-        Ok(client)
-    }
-    pub async fn call(&mut self, method: &str, params: Value) -> io::Result<Value> {
-        self.next_id += 1;
-        let req = json!({"jsonrpc":"2.0","id":self.next_id,"method":method,"params":params});
-        self.write
-            .write_all(
-                serde_json::to_string(&req)
-                    .map_err(io::Error::other)?
-                    .as_bytes(),
-            )
-            .await?;
-        self.write.write_all(b"\n").await?;
-        let mut line = String::new();
-        self.read.read_line(&mut line).await?;
-        if line.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "daemon closed IPC connection",
-            ));
-        }
-        let v: Value = serde_json::from_str(&line).map_err(io::Error::other)?;
-        if let Some(e) = v.get("error") {
-            return Err(io::Error::other(e.to_string()));
-        }
-        Ok(v.get("result").cloned().unwrap_or(Value::Null))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use llm_meter_core::{Connection, ConnectionStatus, CredentialRef};
+    use llm_meter_ipc::IpcEndpoint;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use uuid::Uuid;
     #[tokio::test]
     async fn private_socket_and_allowlisted_connection_dto() {
         let root = std::env::temp_dir().join(format!("llm-meter-ipc-{}", Uuid::new_v4()));
-        let socket = root.join("daemon.sock");
+        #[cfg(unix)]
+        let endpoint = IpcEndpoint::from_path(root.join("daemon.sock"));
+        #[cfg(windows)]
+        let endpoint = IpcEndpoint::from_pipe_name(format!(
+            r"\\.\pipe\io.github.llmmeter.test.{}",
+            Uuid::new_v4()
+        ))
+        .unwrap();
         let repo = Arc::new(Repository::in_memory().unwrap());
         let credential = CredentialRef {
             id: Uuid::new_v4(),
@@ -564,27 +531,38 @@ mod tests {
         };
         repo.add_authenticated_connection(&connection, Some(&credential), None)
             .unwrap();
+        let listener = Listener::bind(&endpoint).await.unwrap();
         let server = Server::new(repo);
-        let path = socket.clone();
-        let task = tokio::spawn(async move { server.serve(&path).await });
-        for _ in 0..50 {
-            if socket.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let task = tokio::spawn(async move { server.serve(listener).await });
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(endpoint.as_path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
         }
-        assert_eq!(
-            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let list = call(&socket, "connections/list", json!({})).await.unwrap();
+        let list = call(&endpoint, "connections/list", json!({}))
+            .await
+            .unwrap();
         assert!(list[0].get("credential_ref_id").is_none());
         assert!(!list.to_string().contains("must-not-leak"));
-        task.abort();
+        assert_eq!(
+            call(&endpoint, "system/shutdown", json!({})).await.unwrap(),
+            json!({"shutting_down":true})
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("server did not stop after the shutdown request")
+            .unwrap()
+            .unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 }

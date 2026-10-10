@@ -6,8 +6,8 @@
 [![license](https://img.shields.io/crates/l/llm-meter-cli.svg)](https://crates.io/crates/llm-meter-cli)
 
 LLM Meter is a local-first usage, cost, and quota monitor for LLM services on
-Linux. It combines a Rust daemon, CLI, native Noctalia/Waybar integration, and
-an optional Tauri desktop application.
+Linux and Windows. It combines a Rust daemon, CLI, native Linux top-bar
+integration, and a Tauri desktop and tray application.
 
 The current provider implementation supports OpenAI Platform accounts,
 ChatGPT subscriptions, and Kimi (Moonshot AI) Code subscriptions. LLM Meter
@@ -54,33 +54,64 @@ model, and calculate an API-equivalent cost estimate.
 OpenAI / Codex logs
         │
         ▼
-   llm-meterd ─── SQLite + system Keyring
-        │ private Unix socket
+   llm-meterd ─── SQLite + OS credential store
+        │ private local IPC
         ├──────── llm-meter CLI
         ├──────── Noctalia / Waybar
         └──────── Tauri desktop
 ```
 
 `llm-meterd` owns provider access, normalization, local Codex collection,
-storage, and alerts. Frontends consume allowlisted snapshots over a private
-Unix socket; credentials and raw secret material are not exposed through IPC.
+storage, and alerts. Frontends consume allowlisted snapshots over private local
+IPC: a Unix socket on Linux and a per-user named pipe on Windows. Secret input
+may transit this protected channel briefly, but it is never retained in normal
+snapshot DTOs, SQLite, configuration, logs, or persistent WebView state.
 
 ## Requirements
 
-- Linux with a user session and `XDG_RUNTIME_DIR`.
-- Rust stable with edition 2024 support.
-- A Secret Service implementation such as GNOME Keyring or KeePassXC for API
-  keys and OAuth secrets.
-- `jq` for automatic Noctalia/Waybar configuration.
-- Noctalia/Quickshell or Waybar for top-bar integration.
-- Hyprland is supported directly; the daemon and CLI are compositor-neutral.
+- Rust stable with edition 2024 support is required for source builds.
+- Linux requires a user session with `XDG_RUNTIME_DIR` and a Secret Service
+  implementation such as GNOME Keyring or KeePassXC. Noctalia/Quickshell and
+  Waybar remain optional Linux integrations; Hyprland is supported directly.
+- Windows requires Windows 10 22H2 or a maintained Windows 11 release. Secrets
+  use Windows Credential Manager, and the desktop uses Microsoft Edge WebView2.
+  The NSIS installer provisions the WebView2 bootstrapper when required.
 
-Building the optional desktop application additionally requires the normal
-Tauri v2 Linux dependencies, including WebKitGTK 4.1 and JavaScriptCoreGTK 4.1.
+Building the desktop on Linux additionally requires the normal Tauri v2 Linux
+dependencies, including WebKitGTK 4.1 and JavaScriptCoreGTK 4.1.
 
 ## Installation
 
-### Stable release with Cargo (recommended)
+### Windows installer
+
+Download the `llm-meter-vX.Y.Z-x86_64-pc-windows-msvc-unsigned-preview-setup.exe`
+asset from the matching GitHub Release and run it as the current user. The
+installer includes the Tauri desktop, CLI, and `llm-meterd.exe` sidecar, and
+registers the daemon's per-user Scheduled Task. A portable ZIP is also
+published for testing and recovery; it still stores application data under
+`%LOCALAPPDATA%` and secrets in Windows Credential Manager.
+
+The current automated Windows artifacts are unsigned previews. Their filenames
+include `unsigned-preview`, and Windows may display an unknown-publisher
+warning. They are not production-signed releases; published SHA-256 checksums
+verify file integrity but do not establish publisher identity.
+
+The desktop is single-instance. A normal launch shows the draggable compact
+widget that maps Noctalia's `BarWidget` to Windows. Click the widget to toggle
+the 420 x 480 status panel, drag it to keep it where it is useful, or right-click
+it to open the main window. Its position is remembered between launches. When
+desktop login startup is configured, `--hide` creates only the tray. The daemon
+uses a per-user Scheduled Task configured through `llm-meter autostart`, and the
+desktop can also recover an offline sibling daemon with a bounded wait. Quitting
+the desktop tray does not implicitly delete data or credentials.
+
+See [the Windows integration baseline](docs/windows-integration-v0.1.md) for
+supported systems, paths, packaging, security, and troubleshooting.
+On Windows, `llm-meter update` opens the official latest Release; install the
+new current-user NSIS package rather than replacing running executables through
+Cargo.
+
+### Linux stable release with Cargo
 
 For normal use, install the latest published stable release from crates.io.
 This avoids tracking incomplete changes from the repository's `main` branch.
@@ -166,7 +197,7 @@ or breaking changes. Use this path for contributing, testing an unreleased fix,
 or working on the desktop application:
 
 ```bash
-git clone https://github.com/llm-meter/llm-meter.git
+git clone https://github.com/huihui110120/LLM-Meter.git
 cd llm-meter
 make install
 ```
@@ -271,11 +302,12 @@ Codex session logs are read incrementally from:
 ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 ```
 
-LLM Meter detects open session files through `/proc`, records model changes, and
-attributes cumulative-token deltas to the model active at that point. It also
-reads the current and adjacent UTC day directories so today's local total does
-not disappear after a Codex process exits. A new local calendar day starts at
-zero according to the machine's timezone.
+On Linux, LLM Meter detects open session files through `/proc`; Windows uses its
+platform collector. Both implementations record model changes and attribute
+cumulative-token deltas to the model active at that point. LLM Meter also reads
+the current and adjacent UTC day directories so today's local total does not
+disappear after a Codex process exits. A new local calendar day starts at zero
+according to the machine's timezone.
 
 The original Codex JSONL files remain owned by Codex; LLM Meter does not copy
 them into its database. Closed historical sessions outside the local-day window
@@ -300,15 +332,20 @@ Set `LLM_METER_HOME` to use a different persistent root. On first launch, the
 daemon migrates the earlier XDG data/config layout when the new destination is
 empty.
 
-Other locations intentionally remain separate:
+Other locations intentionally remain separate on Linux:
 
 - runtime socket: `$XDG_RUNTIME_DIR/llm-meter/daemon.sock`;
 - sensitive credentials: operating-system Keyring/Secret Service;
 - Codex-owned session and authentication state: `~/.codex`;
 - Noctalia plugin installation: `~/.config/noctalia/plugins/llm-meter`.
 
-Directories are created with mode `0700`; database, configuration, and daemon
-log files use mode `0600`.
+Windows stores configuration, SQLite data, and logs under
+`%LOCALAPPDATA%\LLM Meter`; credentials remain in Windows Credential Manager.
+The Windows named pipe has no corresponding file in this directory.
+
+On Linux, directories are created with mode `0700`; database, configuration,
+and daemon log files use mode `0600`. Windows relies on the current user's
+profile ACLs instead of Unix permission bits.
 
 ## Configuration
 
@@ -327,10 +364,10 @@ hourly_days = 180
 provider_events_days = 30
 ```
 
-See [`config.example.toml`](https://github.com/llm-meter/llm-meter/blob/main/config.example.toml).
+See [`config.example.toml`](https://github.com/huihui110120/LLM-Meter/blob/main/config.example.toml).
 Configuration files must not contain credentials.
 
-## systemd and Hyprland
+## systemd and Hyprland (Linux)
 
 Packaging templates are provided under `packaging/`:
 
@@ -348,7 +385,7 @@ systemctl --user enable --now llm-meterd.service
 journalctl --user -u llm-meterd.service -f
 ```
 
-See the [Hyprland integration guide](https://github.com/llm-meter/llm-meter/blob/main/packaging/README-hyprland.md)
+See the [Hyprland integration guide](https://github.com/huihui110120/LLM-Meter/blob/main/packaging/README-hyprland.md)
 for manual packaging details.
 
 ## Development
@@ -410,14 +447,15 @@ git push origin v0.2.0
 ```
 
 The release workflow runs the workspace tests, builds the CLI, daemon, and
-Tauri desktop binaries, and publishes a versioned Linux archive together with
+Tauri desktop binaries, and publishes a versioned Linux archive, an explicitly
+labelled unsigned-preview Windows NSIS installer and portable ZIP, and combined
 `SHA256SUMS`. It does not publish crates to crates.io; crate publishing remains
 the separate, ordered process described above.
 
 ## Documentation
 
 The detailed architecture and desktop integration documents are indexed in
-[`docs/README.md`](https://github.com/llm-meter/llm-meter/blob/main/docs/README.md).
+[`docs/README.md`](https://github.com/huihui110120/LLM-Meter/blob/main/docs/README.md).
 
 ## License
 
