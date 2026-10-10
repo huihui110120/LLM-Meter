@@ -1,17 +1,23 @@
 use clap::{Parser, Subcommand};
-use llm_meter_daemon::{
-    ipc::{Client, call},
-    socket_path,
-};
-use llm_meter_secret_store::NativeSecretStore;
+use llm_meter_ipc::{Client, call, endpoint};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, Write},
     time::Duration,
 };
 
+mod diagnostics;
+mod platform;
+#[cfg(unix)]
+#[path = "setup.rs"]
+mod setup;
+#[cfg(windows)]
+#[path = "setup_windows.rs"]
 mod setup;
 mod update;
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("llm-meter CLI currently supports Unix and Windows");
 
 #[derive(Parser)]
 #[command(
@@ -25,23 +31,23 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Interactively install desktop and top-bar integration.
+    /// Configure platform integration and daemon startup.
     #[command(alias = "install")]
     Setup {
-        /// Desktop environment to integrate with.
+        /// Unix desktop environment to integrate with.
         #[arg(long, value_enum)]
         desktop: Option<setup::DesktopEnvironment>,
-        /// Top bar to integrate with.
+        /// Unix top bar to integrate with.
         #[arg(long, value_enum)]
         bar: Option<setup::TopBar>,
-        /// Do not prompt; both --desktop and --bar are required.
+        /// Do not prompt; Unix requires explicit --desktop and --bar choices.
         #[arg(long)]
         non_interactive: bool,
         /// Show the selected installation plan without changing files.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Update to the latest stable crates.io release and refresh integrations.
+    /// Update from the platform's supported stable release channel.
     Update,
     /// Inspect or change daemon startup with the user session.
     Autostart {
@@ -50,6 +56,9 @@ enum Command {
     },
     #[command(name = "_post-update", hide = true)]
     PostUpdate,
+    #[cfg(windows)]
+    #[command(name = "_prepare-update", hide = true)]
+    PrepareUpdate,
     Status,
     Connections,
     Diagnostics,
@@ -192,73 +201,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     match &a.command {
         Command::Update => return update::run(),
         Command::PostUpdate => return setup::post_update(),
+        #[cfg(windows)]
+        Command::PrepareUpdate => return setup::prepare_update().await,
         Command::Autostart { action } => {
             let status = match action {
-                AutostartAction::Status => setup::autostart_status(),
+                AutostartAction::Status => setup::autostart_status()?,
                 AutostartAction::Enable => setup::set_autostart(true)?,
                 AutostartAction::Disable => setup::set_autostart(false)?,
             };
             print(serde_json::to_value(status)?);
             return Ok(());
         }
+        Command::Diagnostics => {
+            print(diagnostics::collect().await?);
+            return Ok(());
+        }
         _ => {}
     }
-    let p = socket_path()?;
+    let p = endpoint()?;
     match a.command {
         Command::Setup { .. } => unreachable!(),
         Command::Update | Command::PostUpdate | Command::Autostart { .. } => unreachable!(),
+        #[cfg(windows)]
+        Command::PrepareUpdate => unreachable!(),
         Command::Status => print(call(&p, "snapshot/get", json!({})).await?),
         Command::Connections => print(call(&p, "connections/list", json!({})).await?),
-        Command::Diagnostics => {
-            let version = call(&p, "system/version", json!({})).await;
-            let health = call(&p, "system/health", json!({})).await;
-            let providers = call(&p, "providers/list", json!({})).await;
-            let connections = call(&p, "connections/list", json!({})).await;
-            let session_type =
-                std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into());
-            let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into());
-            let socket_state = match std::fs::metadata(&p) {
-                Ok(meta) if std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()) => {
-                    "available"
-                }
-                Ok(_) => "not-a-socket",
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => "permission-denied",
-                Err(_) => "missing",
-            };
-            let user_bus_names =
-                command_line("busctl", &["--user", "--no-pager", "--list"]).unwrap_or_default();
-            let notifications = user_bus_names.contains("org.freedesktop.Notifications");
-            let portal = user_bus_names.contains("org.freedesktop.portal.Desktop");
-            let secret_service = NativeSecretStore.availability().await;
-            let mut hints = Vec::new();
-            if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
-                hints.push("Import the graphical session D-Bus environment (UWSM is recommended on Hyprland).");
-            }
-            if secret_service != "available" {
-                hints.push("Start and unlock a Secret Service provider such as GNOME Keyring or KeePassXC.");
-            }
-            if !notifications {
-                hints.push("Start a notification daemon such as mako, dunst, fnott, or swaync.");
-            }
-            if !portal {
-                hints.push(
-                    "Install and start xdg-desktop-portal-hyprland plus xdg-desktop-portal-gtk.",
-                );
-            }
-            print(json!({
-                "version":version.ok(),"health":health.ok(),"os":std::env::consts::OS,
-                "providers":providers.ok(),"connections":connections.ok(),
-                "session":{"type":session_type,"desktop":desktop,"wayland_display":std::env::var_os("WAYLAND_DISPLAY").is_some(),"dbus":std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()},
-                "hyprland":{"present":std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),"version":command_line("hyprctl", &["version"]).and_then(|s|s.lines().next().map(str::to_owned))},
-                "daemon":{"service_active":command_success("systemctl", &["--user","is-active","llm-meterd.service"]),"socket":socket_state},
-                "secret_service":{"state":secret_service},
-                "notification_service":{"available":notifications},
-                "portal":{"desktop":portal,"hyprland_service":command_success("systemctl", &["--user","is-active","xdg-desktop-portal-hyprland.service"])},
-                "webkitgtk":{"version":command_line("pkg-config", &["--modversion","webkit2gtk-4.1"])},
-                "window_identity":{"expected":"io.github.llmmeter"},
-                "hints":hints
-            }))
-        }
+        Command::Diagnostics => unreachable!(),
         Command::Refresh { connection_id } => {
             let _: uuid::Uuid = connection_id.parse().map_err(|_| "invalid connection id")?;
             print(
@@ -327,8 +295,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("daemon did not return login state")?;
                 if let Some(url) = challenge.get("auth_url").and_then(Value::as_str) {
                     eprintln!("Open this URL to authenticate:\n{url}");
-                    if open && !command_success("xdg-open", &[url]) {
-                        return Err("could not open the login URL with xdg-open".into());
+                    if open {
+                        platform::open_https_url(url)?;
                     }
                 }
                 if let Some(url) = challenge.get("verification_url").and_then(Value::as_str) {
@@ -339,8 +307,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(Value::as_str)
                             .unwrap_or("<missing>")
                     );
-                    if open && !command_success("xdg-open", &[url]) {
-                        return Err("could not open the verification URL with xdg-open".into());
+                    if open {
+                        platform::open_https_url(url)?;
                     }
                 }
                 print(
@@ -510,7 +478,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 "show"
             };
-            std::process::Command::new("llm-meter-desktop")
+            platform::desktop_command()
                 .arg(format!("--{action}"))
                 .spawn()
                 .map_err(|error| {
@@ -545,24 +513,6 @@ fn print(v: Value) {
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "null".into())
     )
 }
-fn command_line(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-}
-fn command_success(program: &str, args: &[&str]) -> bool {
-    std::process::Command::new(program)
-        .args(args)
-        .output()
-        .is_ok_and(|v| v.status.success())
-}
-
 #[cfg(test)]
 mod tests {
     use super::read_secret_line;

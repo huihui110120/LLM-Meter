@@ -2,7 +2,7 @@
 
 > **文档类型**：技术设计 / RFC  
 > **状态**：Draft  
-> **目标仓库**：`ChenMiaoi/llm-meter`  
+> **目标仓库**：`huihui110120/LLM-Meter`  
 > **基线日期**：2026-07-13  
 > **建议版本**：Core/Schema v2/v3 增量演进  
 > **主要目标**：在保留 ChatGPT Subscription 与 OpenAI Platform 现有能力的基础上，支持第三方 OpenAI 兼容中转站的精确 Token、实际扣费、余额与历史用量展示。
@@ -2214,16 +2214,16 @@ config.example.toml
 
 ### LLM Meter 当前实现
 
-- Repository: https://github.com/ChenMiaoi/llm-meter
-- Core domain: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/core/src/lib.rs
-- OpenAI standard adapter: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/provider-openai/src/standard.rs
-- OpenAI platform adapter: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/provider-openai/src/platform.rs
-- Provider runtime: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/daemon/src/scheduler.rs
-- Daemon runner: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/daemon/src/runner.rs
-- IPC: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/daemon/src/ipc.rs
-- Snapshot: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/daemon/src/snapshot.rs
-- Storage: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/storage/src/lib.rs
-- Initial schema: https://github.com/ChenMiaoi/llm-meter/blob/main/crates/storage/migrations/0001_initial.sql
+- Repository: https://github.com/huihui110120/LLM-Meter
+- Core domain: https://github.com/huihui110120/LLM-Meter/blob/main/crates/core/src/lib.rs
+- OpenAI standard adapter: https://github.com/huihui110120/LLM-Meter/blob/main/crates/provider-openai/src/standard.rs
+- OpenAI platform adapter: https://github.com/huihui110120/LLM-Meter/blob/main/crates/provider-openai/src/platform.rs
+- Provider runtime: https://github.com/huihui110120/LLM-Meter/blob/main/crates/daemon/src/scheduler.rs
+- Daemon runner: https://github.com/huihui110120/LLM-Meter/blob/main/crates/daemon/src/runner.rs
+- IPC: https://github.com/huihui110120/LLM-Meter/blob/main/crates/daemon/src/ipc.rs
+- Snapshot: https://github.com/huihui110120/LLM-Meter/blob/main/crates/daemon/src/snapshot.rs
+- Storage: https://github.com/huihui110120/LLM-Meter/blob/main/crates/storage/src/lib.rs
+- Initial schema: https://github.com/huihui110120/LLM-Meter/blob/main/crates/storage/migrations/0001_initial.sql
 
 ### New API
 

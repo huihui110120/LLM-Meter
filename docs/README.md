@@ -14,6 +14,8 @@
    - 定义 Waybar Popup 的信息层级、视觉方向、组件状态、响应式与可访问性。
 4. [Hyprland 桌面集成](./hyprland-integration-v0.1.md)
    - Linux / Wayland / Hyprland 下的窗口角色、Waybar、systemd user、UWSM 和验收规范。
+5. [Windows 集成基线](./windows-integration-v0.1.md)
+   - Windows 下的每用户 daemon、命名管道、Credential Manager、托盘、NSIS 和发布验收规范。
 
 ## 文档职责
 
@@ -23,19 +25,21 @@
 | `llm-meter-architecture-v0.1.md` | 跨平台核心与通用 Linux 架构 | 核心规范 |
 | `desktop-ui-design-v0.1.md` | Popup/Main Window 的视觉和交互 | UI 规范 |
 | `hyprland-integration-v0.1.md` | Hyprland 平台 Profile | Hyprland 环境下的补充规范 |
+| `windows-integration-v0.1.md` | Windows 平台 Profile | Windows 环境下的补充规范 |
 
 发生冲突时按以下顺序处理：
 
 1. Provider、指标、存储、安全和 IPC 以详细架构设计为准；
 2. Popup 的信息层级、组件和可访问性以桌面 UI 设计基线为准；
 3. Hyprland 的窗口、会话、Waybar 和桌面行为以 Hyprland 集成文档为准；
-4. 架构总览只负责串联，不单独引入新的领域语义。
+4. Windows 的进程、IPC、凭据库、安装和发布行为以 Windows 集成文档为准；
+5. 架构总览只负责串联，不单独引入新的领域语义。
 
 ## 当前已确定的关键决策
 
 - daemon-first：采集、归一化、存储、告警均由 `llm-meterd` 完成；
 - Provider-neutral、Capability-driven、Connection-first；
-- Secret 只进入操作系统凭据库，不进入 SQLite、IPC 或 WebView；
+- Secret 只持久化到操作系统凭据库；允许在受保护的本地 IPC 和输入控件中瞬时传输，但不进入 SQLite、日志、Snapshot 或持久化 WebView 状态；
 - Waybar 和桌面 UI 都只消费 daemon 的本地 Snapshot；
 - Hyprland v0.1 使用普通 Wayland `xdg-toplevel` + compositor window rule，不引入 layer-shell；
 - Hyprland 下不依赖应用自行设置全局窗口坐标；

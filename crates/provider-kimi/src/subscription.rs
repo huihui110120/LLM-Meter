@@ -1,6 +1,7 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -97,11 +98,47 @@ impl SubscriptionAdapter {
 }
 
 fn default_device_id_path() -> PathBuf {
-    std::env::var_os("LLM_METER_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".llm-meter")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(DEVICE_ID_FILENAME)
+    platform_app_home(
+        absolute_env_path("LLM_METER_HOME"),
+        absolute_env_path("LOCALAPPDATA"),
+        absolute_env_path("USERPROFILE"),
+        absolute_env_path("HOME"),
+    )
+    .unwrap_or_else(|| PathBuf::from("."))
+    .join(DEVICE_ID_FILENAME)
+}
+
+fn absolute_env_path(name: &str) -> Option<PathBuf> {
+    absolute_path(std::env::var_os(name).map(PathBuf::from))
+}
+
+fn absolute_path(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.filter(|path| path.is_absolute())
+}
+
+fn platform_app_home(
+    override_home: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+    user_profile: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = override_home {
+        return Some(path);
+    }
+    #[cfg(windows)]
+    {
+        let _ = home;
+        local_app_data
+            .map(|path| path.join("LLM Meter"))
+            .or_else(|| {
+                user_profile.map(|path| path.join("AppData").join("Local").join("LLM Meter"))
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (local_app_data, user_profile);
+        home.map(|path| path.join(".llm-meter"))
+    }
 }
 
 fn load_or_create_device_id(path: &Path) -> String {
@@ -116,9 +153,20 @@ fn load_or_create_device_id(path: &Path) -> String {
         let _ = std::fs::create_dir_all(parent);
     }
     if std::fs::write(path, format!("{id}\n")).is_ok() {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).ok();
+        protect_device_id(path);
     }
     id
+}
+
+fn protect_device_id(path: &Path) {
+    #[cfg(unix)]
+    {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn sanitize_device_id(value: &str) -> String {
@@ -772,6 +820,20 @@ fn sample(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_device_home_must_be_absolute() {
+        let absolute = std::env::current_dir().unwrap().join("kimi-home");
+        assert_eq!(
+            absolute_path(Some(absolute.clone())),
+            Some(absolute.clone())
+        );
+        assert_eq!(absolute_path(Some(PathBuf::from("relative"))), None);
+        assert_eq!(
+            platform_app_home(Some(absolute.clone()), None, None, None),
+            Some(absolute)
+        );
+    }
 
     #[test]
     fn parses_usage_response() {

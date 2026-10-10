@@ -262,6 +262,10 @@ popup gap:   12 logical px
 
 - Waybar 左键：toggle Popup；
 - Waybar 右键：打开/聚焦 Main Window；
+- Windows 将 Waybar `BarWidget` 映射为可拖动、可记忆位置的常驻迷你组件；
+  左键在同一个 WebView 窗口内原地展开或收起 Panel，右键仍打开/聚焦 Main Window；
+- Windows Panel 保留迷你组件的右边缘和顶部锚点，并限制在当前显示器范围内；
+  不创建与迷你组件分离的第二个 Popup 窗口；
 - `Escape`：关闭 Popup；
 - 点击关闭按钮：关闭 Popup；
 - 点击“固定”：关闭 Popup 并打开 Main Window；

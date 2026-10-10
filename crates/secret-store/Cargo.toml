@@ -13,8 +13,13 @@ description = "Native Keyring-backed credential storage for LLM Meter"
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
-keyring.workspace = true
 llm-meter-core = { version = "0.2.0", path = "../core" }
 secrecy.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }

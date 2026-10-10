@@ -14,15 +14,73 @@ on:
 permissions:
   contents: write
 
+env:
+  TAURI_CLI_VERSION: 2.11.4
+
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish GitHub Release
-    # Build release binaries on the older supported runner for wider glibc
-    # compatibility than the regular CI environment.
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate tag and package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: release tag must be a semantic version such as v0.2.0" >&2
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          mapfile -t workspace_versions < <(
+            cargo metadata --locked --no-deps --format-version 1 |
+              jq -r '.packages[].version' |
+              sort -u
+          )
+          if [[ "${#workspace_versions[@]}" -ne 1 || "${workspace_versions[0]}" != "$version" ]]; then
+            printf 'error: workspace versions (%s) do not match tag %s\n' \
+              "${workspace_versions[*]}" "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          desktop_version="$(
+            cargo metadata \
+              --locked \
+              --no-deps \
+              --format-version 1 \
+              --manifest-path apps/desktop/src-tauri/Cargo.toml |
+              jq -r '.packages[] | select(.name == "llm-meter-desktop") | .version'
+          )"
+          if [[ "$desktop_version" != "$version" ]]; then
+            echo "error: desktop version $desktop_version does not match tag $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          tauri_version="$(jq -er '.version' apps/desktop/src-tauri/tauri.conf.json)"
+          if [[ "$tauri_version" != "$version" ]]; then
+            echo "error: Tauri bundle version $tauri_version does not match tag $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+  linux:
+    name: Build Linux archive
+    needs: validate
+    # Keep the older runner for wider glibc compatibility than regular CI.
     runs-on: ubuntu-22.04
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -45,39 +103,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Validate tag and package versions
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "error: release tag must be a semantic version such as v0.1.0" >&2
-            exit 1
-          fi
-
-          version="${RELEASE_TAG#v}"
-          mapfile -t workspace_versions < <(
-            cargo metadata --no-deps --format-version 1 |
-              jq -r '.packages[].version' |
-              sort -u
-          )
-          if [[ "${#workspace_versions[@]}" -ne 1 || "${workspace_versions[0]}" != "$version" ]]; then
-            printf 'error: workspace versions (%s) do not match tag %s\n' \
-              "${workspace_versions[*]}" "$RELEASE_TAG" >&2
-            exit 1
-          fi
-
-          desktop_version="$(
-            cargo metadata \
-              --no-deps \
-              --format-version 1 \
-              --manifest-path apps/desktop/src-tauri/Cargo.toml |
-              jq -r '.packages[] | select(.name == "llm-meter-desktop") | .version'
-          )"
-          if [[ "$desktop_version" != "$version" ]]; then
-            echo "error: desktop version $desktop_version does not match tag $RELEASE_TAG" >&2
-            exit 1
-          fi
-
       - name: Test release source
         run: cargo test --workspace --locked
 
@@ -91,7 +116,7 @@ jobs:
             --locked \
             --manifest-path apps/desktop/src-tauri/Cargo.toml
 
-      - name: Assemble reproducible archive and checksums
+      - name: Assemble reproducible archive
         id: package
         shell: bash
         run: |
@@ -122,36 +147,157 @@ jobs:
             -C dist \
             -cf - \
             "$release_name" | gzip -n > "dist/$archive"
-          (
-            cd dist
-            sha256sum "$archive" > SHA256SUMS
-          )
 
           {
             echo "archive=dist/$archive"
-            echo "checksum=dist/SHA256SUMS"
             echo "release_name=$release_name"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Upload workflow artifact
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.release_name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows packages
+    needs: validate
+    runs-on: windows-2022
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test Windows release source
+        run: cargo test --workspace --locked
+
+      - name: Build Windows workspace
+        run: cargo build --workspace --release --locked
+
+      - name: Stage Windows sidecars
+        shell: pwsh
+        run: |
+          $target = (rustc -vV | Select-String '^host: ').Line.Substring(6)
+          $sidecarDir = 'apps/desktop/src-tauri/binaries'
+          New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
+          Copy-Item `
+            'target/release/llm-meter.exe' `
+            "$sidecarDir/llm-meter-$target.exe"
+          Copy-Item `
+            'target/release/llm-meterd.exe' `
+            "$sidecarDir/llm-meterd-$target.exe"
+
+      - name: Test Windows desktop application
+        run: cargo test --all-targets --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "=$env:TAURI_CLI_VERSION" --locked
+
+      - name: Generate native Windows icon and build NSIS
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+            apps/desktop/src-tauri/scripts/generate-windows-icon.ps1
+          Push-Location 'apps/desktop'
+          cargo tauri icon 'src-tauri/icons/icon.png' `
+            --output 'src-tauri/icons/generated'
+          cargo tauri build --bundles nsis -- --locked
+          Pop-Location
+
+      - name: Assemble Windows portable archive
+        id: package
+        shell: pwsh
+        run: |
+          $target = (rustc -vV | Select-String '^host: ').Line.Substring(6)
+          $releaseName = "llm-meter-$env:RELEASE_TAG-$target-unsigned-preview"
+          $stage = "dist/$releaseName"
+          New-Item -ItemType Directory -Force -Path "$stage/bin" | Out-Null
+          Copy-Item 'target/release/llm-meter.exe' "$stage/bin/llm-meter.exe"
+          Copy-Item 'target/release/llm-meterd.exe' "$stage/bin/llm-meterd.exe"
+          Copy-Item `
+            'apps/desktop/src-tauri/target/release/llm-meter-desktop.exe' `
+            "$stage/bin/llm-meter-desktop.exe"
+          Copy-Item README.md, LICENSE, config.example.toml $stage
+          Copy-Item 'docs/windows-integration-v0.1.md' $stage
+
+          $archive = "dist/$releaseName-portable.zip"
+          Compress-Archive -Path $stage -DestinationPath $archive -CompressionLevel Optimal
+
+          $installers = @(
+            Get-ChildItem `
+              -LiteralPath 'apps/desktop/src-tauri/target/release/bundle/nsis' `
+              -File `
+              -Filter '*.exe'
+          )
+          if ($installers.Count -ne 1) {
+            $names = ($installers | Select-Object -ExpandProperty Name) -join ', '
+            throw "Expected exactly one NSIS installer, found $($installers.Count): $names"
+          }
+          $installer = $installers[0]
+          $installerOutput = "dist/$releaseName-setup.exe"
+          Copy-Item $installer.FullName $installerOutput
+
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          "installer=$installerOutput" >> $env:GITHUB_OUTPUT
+          "release_name=$releaseName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.release_name }}
           path: |
             ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.checksum }}
+            ${{ steps.package.outputs.installer }}
           if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate combined checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' |
+              sort -z |
+              xargs -0 -r sha256sum > SHA256SUMS
+          )
+          test -s dist/SHA256SUMS
 
       - name: Create GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-          CHECKSUM: ${{ steps.package.outputs.checksum }}
         run: |
           set -euo pipefail
           flags=(--verify-tag --generate-notes --title "LLM Meter $RELEASE_TAG")
           if [[ "$RELEASE_TAG" == *-* ]]; then
             flags+=(--prerelease)
           fi
-          gh release create "$RELEASE_TAG" "$ARCHIVE" "$CHECKSUM" "${flags[@]}"
+          mapfile -d '' files < <(find dist -maxdepth 1 -type f -print0 | sort -z)
+          gh release create "$RELEASE_TAG" "${files[@]}" "${flags[@]}"

@@ -13,23 +13,9 @@ pub struct NativeSecretStore;
 
 impl NativeSecretStore {
     pub async fn availability(&self) -> &'static str {
-        tokio::task::spawn_blocking(|| {
-            let entry = match keyring::Entry::new("io.github.llmmeter.probe", "availability") {
-                Ok(value) => value,
-                Err(_) => return "unavailable",
-            };
-            match entry.get_password() {
-                Ok(secret) => {
-                    drop(secret);
-                    "available"
-                }
-                Err(keyring::Error::NoEntry) => "available",
-                Err(keyring::Error::NoStorageAccess(_)) => "locked",
-                Err(_) => "unavailable",
-            }
-        })
-        .await
-        .unwrap_or("unavailable")
+        tokio::task::spawn_blocking(probe_availability)
+            .await
+            .unwrap_or("unavailable")
     }
 }
 
@@ -41,6 +27,7 @@ impl SecretStore for NativeSecretStore {
         key: &str,
         secret: SecretString,
     ) -> Result<CredentialRef, ProviderError> {
+        validate_secret_size(secret.expose_secret())?;
         let service_owned = service.to_owned();
         let key_owned = key.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -90,9 +77,53 @@ impl SecretStore for NativeSecretStore {
     }
 }
 
-fn safe_keyring(_: keyring::Error) -> ProviderError {
-    ProviderError::SecretStoreUnavailable
+fn probe_availability() -> &'static str {
+    let key = format!("availability-{}", Uuid::new_v4());
+    let entry = match keyring::Entry::new("io.github.llmmeter.probe", &key) {
+        Ok(value) => value,
+        Err(error) => return availability_error(&error),
+    };
+    if let Err(error) = entry.set_password("llm-meter-probe") {
+        return availability_error(&error);
+    }
+    let read = entry.get_password();
+    let deleted = entry.delete_credential();
+    match (read, deleted) {
+        (Ok(value), Ok(())) if value == "llm-meter-probe" => "available",
+        (Err(error), _) | (_, Err(error)) => availability_error(&error),
+        _ => "unavailable",
+    }
 }
+
+fn availability_error(error: &keyring::Error) -> &'static str {
+    if matches!(error, keyring::Error::NoStorageAccess(_)) {
+        "locked"
+    } else {
+        "unavailable"
+    }
+}
+
+fn safe_keyring(error: keyring::Error) -> ProviderError {
+    if matches!(error, keyring::Error::TooLong(_, _)) {
+        ProviderError::CredentialTooLarge
+    } else {
+        ProviderError::SecretStoreUnavailable
+    }
+}
+
+fn validate_secret_size(secret: &str) -> Result<(), ProviderError> {
+    #[cfg(windows)]
+    if secret.encode_utf16().count().saturating_mul(2) > WINDOWS_CREDENTIAL_BLOB_BYTES {
+        return Err(ProviderError::CredentialTooLarge);
+    }
+    #[cfg(not(windows))]
+    let _ = secret;
+    Ok(())
+}
+
+#[cfg(windows)]
+const WINDOWS_CREDENTIAL_BLOB_BYTES: usize = 2560;
+
 fn backend_name() -> &'static str {
     if cfg!(target_os = "linux") {
         "secret-service"
@@ -164,5 +195,41 @@ mod tests {
         assert_eq!(s.get(&r).await.unwrap().expose_secret(), "never-log-this");
         s.delete(&r).await.unwrap();
         assert!(s.get(&r).await.is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_credential_limit_uses_utf16_bytes() {
+        assert!(validate_secret_size(&"a".repeat(1280)).is_ok());
+        assert!(matches!(
+            validate_secret_size(&"a".repeat(1281)),
+            Err(ProviderError::CredentialTooLarge)
+        ));
+        assert!(validate_secret_size(&"\u{1f600}".repeat(640)).is_ok());
+        assert!(matches!(
+            validate_secret_size(&"\u{1f600}".repeat(641)),
+            Err(ProviderError::CredentialTooLarge)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "writes a temporary entry to the current user's Credential Manager"]
+    async fn windows_native_store_roundtrip() {
+        let store = NativeSecretStore;
+        let key = format!("integration-{}", Uuid::new_v4());
+        let reference = store
+            .put(
+                "io.github.llmmeter.test",
+                &key,
+                SecretString::from("temporary-test-secret"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get(&reference).await.unwrap().expose_secret(),
+            "temporary-test-secret"
+        );
+        store.delete(&reference).await.unwrap();
     }
 }

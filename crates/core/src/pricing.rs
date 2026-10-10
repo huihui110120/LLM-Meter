@@ -57,7 +57,7 @@ const fn price(
 // -------------------------------------------------------------------------
 
 pub const OPENAI_SOURCE_URL: &str = "https://developers.openai.com/api/docs/pricing";
-pub const OPENAI_EFFECTIVE_AS_OF: &str = "2026-07-13";
+pub const OPENAI_EFFECTIVE_AS_OF: &str = "2026-07-16";
 
 const fn openai_price(
     model: &'static str,

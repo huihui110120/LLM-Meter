@@ -676,6 +676,8 @@ pub enum ProviderError {
     CapabilityUnavailable,
     #[error("secret store unavailable")]
     SecretStoreUnavailable,
+    #[error("credential exceeds the platform secure-storage limit")]
+    CredentialTooLarge,
     #[error("internal provider error: {0}")]
     Internal(String),
 }
@@ -692,6 +694,7 @@ impl ProviderError {
             Self::UnsupportedVersion => "unsupported_version",
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::SecretStoreUnavailable => "secret_store_unavailable",
+            Self::CredentialTooLarge => "credential_too_large",
             Self::Internal(_) => "internal",
         }
     }

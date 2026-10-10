@@ -1,8 +1,8 @@
 use crate::{
     ipc::Server,
     scheduler::{ProviderRuntime, Scheduler},
-    socket_path,
 };
+use llm_meter_ipc::{Listener, endpoint};
 use llm_meter_provider_kimi::subscription::SubscriptionAdapter as KimiSubscriptionAdapter;
 use llm_meter_provider_openai::{
     platform::AdminAdapter, standard::StandardAdapter, subscription::SubscriptionAdapter,
@@ -14,18 +14,28 @@ use std::{
     collections::BTreeSet,
     fs::{File, OpenOptions},
     io,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
+};
+#[cfg(unix)]
+use std::{
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::PathBuf,
 };
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // Claim the per-user IPC endpoint before opening the database or starting
+    // schedulers/proxies, so a second daemon cannot produce duplicate effects.
+    let endpoint = endpoint()?;
+    let listener = Listener::bind(&endpoint).await?;
     let home = crate::app_home()?;
+    let _codex_home = crate::codex_home()?;
     let data = home.join("data");
     let logs = home.join("logs");
     prepare_directories(&home, &data, &logs)?;
+    #[cfg(unix)]
     migrate_legacy_layout(&home, &data)?;
     let log = open_log(&logs.join("llm-meterd.log"))?;
     tracing_subscriber::fmt()
@@ -35,8 +45,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let database = data.join("llm-meter.sqlite3");
     let repo = Arc::new(Repository::open(&database)?);
+    #[cfg(unix)]
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))?;
-    let socket = socket_path()?;
     let config = Arc::new(crate::config::Config::load(&crate::config::Config::path()?)?);
     let retention = &config.retention;
     repo.prune(
@@ -82,8 +92,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = Scheduler::new(runtime.clone());
     tokio::spawn(async move { scheduler.run().await });
     tokio::spawn(monitor_local_codex());
-    tracing::info!(component="daemon",operation="startup",socket=%socket.display(),"llm-meter daemon ready");
-    Server::with_runtime(repo, runtime).serve(&socket).await?;
+    tracing::info!(component="daemon",operation="startup",endpoint=%endpoint,"llm-meter daemon ready");
+    Server::with_runtime(repo, runtime).serve(listener).await?;
     Ok(())
 }
 
@@ -145,21 +155,23 @@ async fn monitor_local_codex() {
 fn prepare_directories(home: &Path, data: &Path, logs: &Path) -> io::Result<()> {
     for path in [home, data, logs] {
         std::fs::create_dir_all(path)?;
+        #[cfg(unix)]
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
 
 fn open_log(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
 }
 
 /// Move the original XDG layout on first launch. SQLite's WAL and SHM files
 /// move together with the main database so no committed data is discarded.
+#[cfg(unix)]
 fn migrate_legacy_layout(home: &Path, data: &Path) -> io::Result<()> {
     let Some(user_home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Ok(());
@@ -195,6 +207,7 @@ fn migrate_legacy_layout(home: &Path, data: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn move_file(source: &Path, target: &Path) -> io::Result<()> {
     match std::fs::rename(source, target) {
         Ok(()) => Ok(()),
@@ -206,6 +219,7 @@ fn move_file(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn libc_exdev() -> i32 {
     18
 }

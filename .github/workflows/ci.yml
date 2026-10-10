@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  TAURI_CLI_VERSION: 2.11.4
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -116,4 +119,64 @@ jobs:
             patchelf
 
       - name: Check desktop application
-        run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: cargo check --all-targets --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  windows:
+    name: Windows workspace and desktop
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Check Windows workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run Windows tests
+        run: cargo test --workspace --locked
+
+      - name: Run Windows Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Stage Windows sidecars
+        shell: pwsh
+        run: |
+          cargo build --locked --bin llm-meter --bin llm-meterd
+          $target = (rustc -vV | Select-String '^host: ').Line.Substring(6)
+          $sidecarDir = 'apps/desktop/src-tauri/binaries'
+          New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
+          Copy-Item `
+            'target/debug/llm-meter.exe' `
+            "$sidecarDir/llm-meter-$target.exe"
+          Copy-Item `
+            'target/debug/llm-meterd.exe' `
+            "$sidecarDir/llm-meterd-$target.exe"
+
+      - name: Generate Windows icon from the source PNG
+        shell: pwsh
+        run: >-
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+          apps/desktop/src-tauri/scripts/generate-windows-icon.ps1
+
+      - name: Check Windows desktop application
+        run: cargo check --all-targets --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Run Windows desktop tests
+        run: cargo test --all-targets --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Run Windows desktop Clippy
+        run: cargo clippy --all-targets --locked --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version "=$env:TAURI_CLI_VERSION" --locked
+
+      - name: Build Windows NSIS installer
+        shell: pwsh
+        run: |
+          Push-Location 'apps/desktop'
+          cargo tauri build --debug --bundles nsis -- --locked
+          Pop-Location

@@ -14,6 +14,7 @@ chrono.workspace = true
 hex.workspace = true
 sha2.workspace = true
 llm-meter-core = { version = "0.2.0", path = "../core" }
+llm-meter-ipc = { version = "0.2.0", path = "../ipc" }
 llm-meter-provider-kimi = { version = "0.2.0", path = "../provider-kimi" }
 llm-meter-provider-openai = { version = "0.2.0", path = "../provider-openai" }
 llm-meter-provider-relay = { version = "0.2.0", path = "../provider-relay" }
