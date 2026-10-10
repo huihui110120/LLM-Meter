@@ -1,5 +1,7 @@
 # LLM Meter
 
+**English** | [简体中文](README.zh-CN.md)
+
 [![llm-meter-cli on crates.io](https://img.shields.io/crates/v/llm-meter-cli.svg?label=llm-meter-cli)](https://crates.io/crates/llm-meter-cli)
 [![llm-meter-daemon on crates.io](https://img.shields.io/crates/v/llm-meter-daemon.svg?label=llm-meter-daemon)](https://crates.io/crates/llm-meter-daemon)
 [![crates.io downloads](https://img.shields.io/crates/d/llm-meter-cli.svg?label=downloads)](https://crates.io/crates/llm-meter-cli)
